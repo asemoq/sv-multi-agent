@@ -27,6 +27,8 @@ type Task struct {
 	ID            string           `json:"id"`
 	Prompt        string           `json:"prompt"`
 	Workspace     string           `json:"workspace"`
+	SourceMode    string           `json:"source_mode,omitempty"`
+	DutTop        string           `json:"dut_top,omitempty"`
 	Status        string           `json:"status"`
 	Stage         string           `json:"stage"`
 	Summary       string           `json:"summary,omitempty"`

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/asemoq/sv-multi-agent/internal/logx"
+	"github.com/asemoq/sv-multi-agent/internal/sv/coverage"
 	"github.com/asemoq/sv-multi-agent/internal/sv/markers"
 	"github.com/asemoq/sv-multi-agent/internal/sv/trace"
 )
@@ -72,12 +73,17 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 
 	relativeSources := make([]string, 0, len(sources))
 	for path := range sources {
-		relativeSources = append(relativeSources, filepath.ToSlash(path))
+		if isCompilationUnit(path) {
+			relativeSources = append(relativeSources, filepath.ToSlash(path))
+		}
 	}
 	sort.Strings(relativeSources)
+	if len(relativeSources) == 0 {
+		return failed("Expected at least one .sv compilation unit under rtl/ or tb/")
+	}
 
 	topModule := topModuleName(opts)
-	command := buildVerilatorCommand(buildDir, relativeSources, topModule)
+	command := buildVerilatorCommand(opts, buildDir, relativeSources, topModule)
 	logx.Debugf("simulator: command: %s", strings.Join(command, " "))
 
 	compileLog, compileCode, compileTimedOut := runCommand(ctx, tmpDir, command, opts.VerilatorBuildTimeout)
@@ -126,6 +132,17 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 		}
 	}
 
+	var coverageReport *coverage.Report
+	coverageArtifacts := []Artifact{}
+	if opts.CoverageEnabled && compileOK {
+		report, artifacts, coverageIssue := collectCoverage(ctx, tmpDir, reportDir)
+		coverageReport = report
+		coverageArtifacts = artifacts
+		if coverageIssue.Code != "" {
+			issues = append(issues, coverageIssue)
+		}
+	}
+
 	var traceReport map[string]any
 	if !passed {
 		traceReport = trace.BuildTraceReport(tmpDir, orString(runLog, combined), contractData, opts.TraceWindowEdges, 8, rtl)
@@ -151,6 +168,7 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 		"fail_outputs":         parsed.FailOutputs,
 		"sources":              relativeSources,
 		"issues":               issues,
+		"coverage":             coverageReport,
 		"trace_report":         traceReport,
 	}
 	serialized, _ := json.MarshalIndent(report, "", "  ")
@@ -158,6 +176,7 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 		{Path: "reports/verilator.log", Content: truncateTail(combined, 50000)},
 		{Path: "reports/simulation.json", Content: string(serialized)},
 	}
+	artifacts = append(artifacts, coverageArtifacts...)
 	if traceReport != nil {
 		if data, err := json.MarshalIndent(traceReport, "", "  "); err == nil {
 			artifacts = append(artifacts, Artifact{Path: "reports/trace_report.json", Content: string(data)})
@@ -178,6 +197,7 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 		FailTime:           parsed.FailTime,
 		FailOutputs:        make([]FailOutput, 0, len(parsed.FailOutputs)),
 		TraceReport:        traceReport,
+		Coverage:           coverageReport,
 	}
 	for _, output := range parsed.FailOutputs {
 		result.FailOutputs = append(result.FailOutputs, FailOutput{
@@ -189,12 +209,70 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 	return result
 }
 
-func buildVerilatorCommand(buildDir string, sources []string, topModule string) []string {
+func buildVerilatorCommand(opts Options, buildDir string, sources []string, topModule string) []string {
 	command := []string{
 		"verilator", "--binary", "--sv", "--timing", "--trace", "--assert",
 		"-Wall", "-Wno-fatal", "-j", "0", "--top-module", topModule, "--Mdir", buildDir,
 	}
+	if opts.CoverageEnabled {
+		command = append(command, "--coverage-line", "--coverage-toggle")
+	}
 	return append(command, sources...)
+}
+
+func collectCoverage(ctx context.Context, tmpDir, reportDir string) (*coverage.Report, []Artifact, Issue) {
+	dataPath := ""
+	for _, candidate := range []string{
+		filepath.Join(tmpDir, "coverage.dat"),
+		filepath.Join(tmpDir, "build", "coverage.dat"),
+		filepath.Join(tmpDir, "build", "obj_dir", "coverage.dat"),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			dataPath = candidate
+			break
+		}
+	}
+	if dataPath == "" {
+		return nil, nil, Issue{
+			Severity: "warning",
+			Code:     "coverage.data",
+			Message:  "coverage.dat was not produced; coverage collection skipped",
+		}
+	}
+
+	tool, err := exec.LookPath("verilator_coverage")
+	if err != nil {
+		return nil, nil, Issue{
+			Severity: "warning",
+			Code:     "coverage.tool",
+			Message:  "verilator_coverage is not installed on PATH; coverage collection skipped",
+		}
+	}
+
+	infoPath := filepath.Join(reportDir, "coverage.info")
+	logText, exitCode, timedOut := runCommand(ctx, tmpDir, []string{tool, "--write-info", infoPath, dataPath}, 60)
+	if timedOut || exitCode != 0 {
+		message := "verilator_coverage failed"
+		if timedOut {
+			message += ": timed out"
+		}
+		if tail := strings.TrimSpace(truncateTail(logText, 1000)); tail != "" {
+			message += ": " + tail
+		}
+		return nil, nil, Issue{Severity: "warning", Code: "coverage.convert", Message: message}
+	}
+
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		return nil, nil, Issue{Severity: "warning", Code: "coverage.read", Message: "read coverage report: " + err.Error()}
+	}
+	report := coverage.ParseLCOV(data, tmpDir)
+	serialized, _ := json.MarshalIndent(report, "", "  ")
+	artifacts := []Artifact{
+		{Path: "reports/coverage.info", Content: string(data)},
+		{Path: "reports/coverage.json", Content: string(serialized)},
+	}
+	return &report, artifacts, Issue{}
 }
 
 func topModuleName(opts Options) string {

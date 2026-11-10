@@ -33,23 +33,24 @@ Debugger) run in-process in one binary.
 6. **Verilator is external.** It is a native tool and `--binary` also needs a C++
    compiler and `make`. The Docker image installs them; local runs need them on
    `PATH`.
-7. **RAG is optional and must degrade gracefully.** If Postgres/pgvector or the
-   embedding endpoint is unavailable, tasks still run without retrieval; log a
-   warning and continue.
+7. **RAG is always on.** Postgres/pgvector and the embedding endpoint are
+   required; startup and steps fail when RAG is unavailable.
 
 ## Repository map
 
 ```
-  cmd/svma/main.go                # unified CLI: serve + submit/get/list/wait/setup/config/version
+  cmd/svma/main.go                # unified CLI: serve + submit/analyze/get/list/wait/setup/config/version
   cmd/sv-multi-agent/main.go        # thin wrapper around internal/app
   cmd/svctl/main.go               # thin wrapper around internal/cli
   internal/app/app.go             # sv-multi-agent wiring (LLM/MCP, store, HTTP server)
-  internal/agents/                # Architect, Planner, Coder, Verifier, Simulator, Debugger
+  internal/agents/                # Architect, Planner, Coder, Verifier, Simulator, Debugger, Lint
   internal/sv/contract/           # design contract normalize + lint + size heuristic
+  internal/sv/coverage/           # LCOV parser for coverage-guided verification
   internal/sv/markers/            # simulation marker protocol
+  internal/sv/mutate/             # mutant injection for mutation testing
   internal/sv/slicer/             # RTL structure parser, blocks + backward slice
   internal/sv/trace/              # VCD parser + alignment diagnosis
-  internal/workflow/manager.go    # workflow: architect -> planner? -> coder -> verifier -> sim -> debug
+  internal/workflow/manager.go    # workflow: ingest? -> architect -> planner? -> coder? -> lint -> verifier? -> sim -> debug -> coverage? -> mutation?
   internal/api/handler.go         # HTTP/JSON control plane
   internal/llm/client.go          # OpenAI-compatible HTTP client
   internal/embeddings/client.go   # OpenAI-compatible embeddings client
@@ -87,15 +88,34 @@ Build the portable CLI for another platform:
 ## RAG
 
 - Commands: `svma rag migrate|check|index|search|stats`.
-- Config: `RAG_ENABLED`, `RAG_REQUIRED`, `DATABASE_URL`, `EMBEDDING_BASE_URL`,
-  `EMBEDDING_MODEL`, `EMBEDDING_DIM`.
+- Config: `DATABASE_URL`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`,
+  `EMBEDDING_DIM`.
 - `EMBEDDING_DIM` must match the column type in the pgvector schema: the store
   uses `vector(N)` up to 2000 dims and `halfvec(N)` above that (Qwen3-Embedding-4B
   returns 2560, so the default schema is `halfvec(2560)`).
 - Completed tasks are indexed automatically (`RAG_INDEX_TASKS`).
-- Retrieval is injected into Architect/Coder/Verifier/Debugger prompts. With
-  `RAG_REQUIRED=0` a retrieval failure is logged and the step continues; with
-  `RAG_REQUIRED=1` startup and steps fail when RAG is unavailable.
+- Retrieval is injected into Architect/Coder/Verifier/Debugger prompts. RAG is
+  always on: startup and steps fail when RAG is unavailable.
+
+## Analyze mode, lint and coverage
+
+- `source_mode=analyze` uploads existing `rtl/`/`tb/` files as `map[path]content`;
+  the workflow runs `ingest -> architect -> lint -> verifier? -> simulator` and
+  skips the Coder/Planner. Never accept absolute paths or `..`.
+- `internal/agents.Lint` runs `verilator --lint-only`; warnings become `Issue`s,
+  and `LINT_ERROR_ON`/`LINT_FAIL_ON_ERROR` control which ones fail the task.
+- Coverage is opt-in (`COVERAGE_ENABLED=1`). The Simulator adds
+  `--coverage-line --coverage-toggle`, parses `verilator_coverage --write-info`
+  output with `internal/sv/coverage`, and the workflow asks the Verifier for
+  additional tests when line coverage is below `COVERAGE_MIN`.
+- Keep coverage failures non-fatal: a passing simulation stays `completed` with
+  a `coverage.low` warning.
+- Mutation testing is opt-in (`MUTATION_ENABLED=1`). `internal/sv/mutate` injects
+  mutants and re-runs the Simulator; survivors are recorded in
+  `reports/mutation.json`/`mutation.md` and surfaced as `mutation.weak`. It is
+  best-effort and never fails the task.
+- Every task ends with `reports/report.md` and `reports/report.json`, served via
+  `GET /v1/tasks/{id}/report` and `svma report -task-id <id>`.
 
 ## Large designs
 

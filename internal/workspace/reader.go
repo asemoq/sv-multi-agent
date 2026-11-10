@@ -51,7 +51,7 @@ func readFiles(workspace string, dirs []string, onlySystemVerilog bool) ([]FileE
 			if d.IsDir() {
 				return nil
 			}
-			if onlySystemVerilog && !strings.HasSuffix(strings.ToLower(path), ".sv") {
+			if onlySystemVerilog && !isHDLSource(path) {
 				return nil
 			}
 			content, err := os.ReadFile(path)
@@ -86,4 +86,13 @@ func BundleForWorker(task *store.Task) ([]FileEntry, error) {
 		return nil, fmt.Errorf("read artifacts: %w", err)
 	}
 	return append(sources, artifacts...), nil
+}
+
+func isHDLSource(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".sv", ".svh", ".sva":
+		return true
+	default:
+		return false
+	}
 }

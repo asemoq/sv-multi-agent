@@ -189,6 +189,8 @@ func DiagnoseAlignment(expected, actual []*int, edgeKinds []string) map[string]a
 	current := zip(expected, actual)
 	lagPairs := zip(limit(expected, len(expected)-1), offset(actual, 1))
 	leadPairs := zip(offset(expected, 1), limit(actual, len(actual)-1))
+	lag2Pairs := zip(limit(expected, len(expected)-2), offset(actual, 2))
+	lead2Pairs := zip(offset(expected, 2), limit(actual, len(actual)-2))
 
 	posedge := []pair{}
 	negedge := []pair{}
@@ -208,11 +210,13 @@ func DiagnoseAlignment(expected, actual []*int, edgeKinds []string) map[string]a
 	rates := map[string]*float64{
 		"current":   rate(current),
 		"dut_lag1":  rate(lagPairs),
+		"dut_lag2":  rate(lag2Pairs),
 		"dut_lead1": rate(leadPairs),
+		"dut_lead2": rate(lead2Pairs),
 	}
 	best := ""
 	bestRate := -1.0
-	for _, name := range []string{"current", "dut_lag1", "dut_lead1"} {
+	for _, name := range []string{"current", "dut_lag1", "dut_lag2", "dut_lead1", "dut_lead2"} {
 		if value := rates[name]; value != nil && *value > bestRate {
 			best, bestRate = name, *value
 		}
@@ -222,7 +226,9 @@ func DiagnoseAlignment(expected, actual []*int, edgeKinds []string) map[string]a
 		"best_alignment":       best,
 		"match_rate_current":   round(rates["current"]),
 		"match_rate_dut_lag1":  round(rates["dut_lag1"]),
+		"match_rate_dut_lag2":  round(rates["dut_lag2"]),
 		"match_rate_dut_lead1": round(rates["dut_lead1"]),
+		"match_rate_dut_lead2": round(rates["dut_lead2"]),
 		"match_rate_posedge":   round(rate(posedge)),
 		"match_rate_negedge":   round(rate(negedge)),
 		"samples":              len(current),
@@ -519,8 +525,12 @@ func timingHints(signal string, diagnosis map[string]any) []string {
 	switch best {
 	case "dut_lag1":
 		hints = append(hints, "Output '"+signal+"' matches the reference one cycle later: possible off-by-one-cycle latency.")
+	case "dut_lag2":
+		hints = append(hints, "Output '"+signal+"' matches the reference two cycles later: possible extra pipeline stage.")
 	case "dut_lead1":
 		hints = append(hints, "Output '"+signal+"' matches the reference one cycle earlier: possible premature update.")
+	case "dut_lead2":
+		hints = append(hints, "Output '"+signal+"' matches the reference two cycles earlier: possible missing pipeline stage.")
 	}
 	posedge, posedgeOK := floatPointer(diagnosis["match_rate_posedge"])
 	negedge, negedgeOK := floatPointer(diagnosis["match_rate_negedge"])
@@ -533,18 +543,20 @@ func timingHints(signal string, diagnosis map[string]any) []string {
 func bestAlignment(diagnoses map[string]any) string {
 	best := ""
 	bestScore := 0.0
+	alignments := []string{"dut_lag1", "dut_lag2", "dut_lead1", "dut_lead2"}
 	for _, value := range diagnoses {
 		diagnosis, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}
-		alignment, _ := diagnosis["best_alignment"].(string)
-		if alignment != "dut_lag1" && alignment != "dut_lead1" {
-			continue
-		}
-		score, ok := floatPointer(diagnosis["match_rate_"+alignment])
-		if ok && *score > bestScore {
-			best, bestScore = alignment, *score
+		for _, alignment := range alignments {
+			if diagnosis["best_alignment"] != alignment {
+				continue
+			}
+			score, ok := floatPointer(diagnosis["match_rate_"+alignment])
+			if ok && *score > bestScore {
+				best, bestScore = alignment, *score
+			}
 		}
 	}
 	return best

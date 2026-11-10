@@ -12,9 +12,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +47,10 @@ func Run(args []string) error {
 	timeout := fs.Duration("timeout", 30*time.Minute, "overall wait timeout")
 	jsonOut := fs.Bool("json", false, "print raw JSON instead of the live view")
 	detach := fs.Bool("detach", false, "submit and return immediately (no live view)")
+	rtlPath := fs.String("rtl", "", "existing RTL file or directory (analyze mode)")
+	tbPath := fs.String("tb", "", "existing testbench file or directory (analyze mode)")
+	dutTop := fs.String("top", "", "DUT top module for linting (analyze mode)")
+	specPath := fs.String("spec", "", "specification file (analyze mode)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -61,22 +67,51 @@ func Run(args []string) error {
 		if *prompt == "" {
 			return fmt.Errorf("-prompt is required")
 		}
-		result, err := doJSON(context.Background(), client, http.MethodPost, base+"/v1/tasks", map[string]any{
+		return submitTask(base, client, map[string]any{
 			"prompt":         *prompt,
 			"max_iterations": *maxIterations,
-		})
-		if err != nil {
+		}, *jsonOut, *detach, *timeout)
+	case "analyze":
+		text := strings.TrimSpace(*prompt)
+		if *specPath != "" {
+			data, err := os.ReadFile(*specPath)
+			if err != nil {
+				return fmt.Errorf("read spec: %w", err)
+			}
+			spec := strings.TrimSpace(string(data))
+			if spec != "" {
+				if text != "" {
+					text = spec + "\n\n" + text
+				} else {
+					text = spec
+				}
+			}
+		}
+		if text == "" {
+			return fmt.Errorf("-prompt or -spec is required")
+		}
+		if *rtlPath == "" {
+			return fmt.Errorf("-rtl is required")
+		}
+		files := map[string]string{}
+		if err := collectSourceDir(*rtlPath, "rtl", files); err != nil {
 			return err
 		}
-		if *jsonOut || *detach {
-			printJSON(result)
-			return nil
+		if *tbPath != "" {
+			if err := collectSourceDir(*tbPath, "tb", files); err != nil {
+				return err
+			}
 		}
-		id, _ := result["task_id"].(string)
-		if id == "" {
-			return fmt.Errorf("server did not return task_id")
+		if err := checkBundleSize(files); err != nil {
+			return err
 		}
-		return streamTaskEvents(base, id, *timeout)
+		return submitTask(base, client, map[string]any{
+			"prompt":         text,
+			"max_iterations": *maxIterations,
+			"source_mode":    "analyze",
+			"dut_top":        *dutTop,
+			"files":          files,
+		}, *jsonOut, *detach, *timeout)
 	case "get":
 		if *taskID == "" {
 			return fmt.Errorf("-task-id is required")
@@ -102,8 +137,110 @@ func Run(args []string) error {
 			return waitForTask(client, base, *taskID, *interval, *timeout)
 		}
 		return streamTaskEvents(base, *taskID, *timeout)
+	case "report":
+		if *taskID == "" {
+			return fmt.Errorf("-task-id is required")
+		}
+		data, err := fetchText(client, base+"/v1/tasks/"+url.PathEscape(*taskID)+"/report")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
 	default:
 		return usageError()
+	}
+}
+
+const maxSourceBundleBytes = 24 << 20
+
+func submitTask(base string, client *http.Client, payload map[string]any, jsonOut, detach bool, timeout time.Duration) error {
+	result, err := doJSON(context.Background(), client, http.MethodPost, base+"/v1/tasks", payload)
+	if err != nil {
+		return err
+	}
+	if jsonOut || detach {
+		printJSON(result)
+		return nil
+	}
+	id, _ := result["task_id"].(string)
+	if id == "" {
+		return fmt.Errorf("server did not return task_id")
+	}
+	return streamTaskEvents(base, id, timeout)
+}
+
+// collectSourceDir adds an RTL/TB file or directory tree to the upload bundle.
+// Keys are always prefix/<relative-path> with POSIX separators.
+func collectSourceDir(root, prefix string, files map[string]string) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		if !isCLIHDL(root) {
+			return fmt.Errorf("%s is not a .sv or .svh file", root)
+		}
+		data, err := os.ReadFile(root)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", root, err)
+		}
+		files[prefix+"/"+filepath.Base(root)] = string(data)
+		return nil
+	}
+
+	count := 0
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if path != root && strings.HasPrefix(entry.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isCLIHDL(path) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		files[prefix+"/"+filepath.ToSlash(rel)] = string(data)
+		count++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("no SystemVerilog sources found in %s", root)
+	}
+	return nil
+}
+
+func checkBundleSize(files map[string]string) error {
+	total := 0
+	for _, content := range files {
+		total += len(content)
+	}
+	if total > maxSourceBundleBytes {
+		return fmt.Errorf("source bundle is %d bytes; limit is %d bytes", total, maxSourceBundleBytes)
+	}
+	return nil
+}
+
+func isCLIHDL(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".sv", ".svh", ".sva":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -183,6 +320,29 @@ func waitForTask(client *http.Client, base, id string, interval, timeout time.Du
 	}
 }
 
+// fetchText performs a GET and returns the raw response body for non-2xx checks.
+func fetchText(client *http.Client, endpoint string) ([]byte, error) {
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var result map[string]any
+		if json.Unmarshal(data, &result) == nil {
+			if message, ok := result["error"].(string); ok && message != "" {
+				return nil, errors.New(message)
+			}
+		}
+		return nil, fmt.Errorf("http %d", response.StatusCode)
+	}
+	return data, nil
+}
+
 // doJSON performs one HTTP request and decodes a JSON object response.
 func doJSON(ctx context.Context, client *http.Client, method, endpoint string, payload any) (map[string]any, error) {
 	var body io.Reader
@@ -238,7 +398,7 @@ func normalizeBaseURL(addr string) string {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage: svma <serve|submit|get|list|wait|version> [flags]")
+	return fmt.Errorf("usage: svma <serve|submit|analyze|get|list|wait|report|version> [flags]")
 }
 
 func printJSON(v any) {

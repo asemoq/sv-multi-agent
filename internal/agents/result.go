@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/asemoq/sv-multi-agent/internal/sv/contract"
+	"github.com/asemoq/sv-multi-agent/internal/sv/coverage"
 	"github.com/asemoq/sv-multi-agent/internal/sv/slicer"
 )
 
@@ -50,6 +51,8 @@ type Result struct {
 	FailTime           *int
 	FailOutputs        []FailOutput
 	TraceReport        map[string]any
+	// Coverage is set by the Simulator when coverage collection is enabled.
+	Coverage *coverage.Report
 	// Plan is set by the Planner when the design is decomposed.
 	Plan *Plan
 }
@@ -60,11 +63,20 @@ type Options struct {
 	MaxRevisions          int
 	ContractOnly          bool
 	TopModule             string
+	DutTop                string
 	VerilatorBuildTimeout int
 	VerilatorRunTimeout   int
 	TraceWindowEdges      int
+	LintEnabled           bool
+	LintFailOnError       bool
+	LintErrorOn           []string
+	CoverageEnabled       bool
+	CoverageMin           float64
+	CoverageRounds        int
 	// Context is optional retrieved RAG context prepended to LLM prompts.
 	Context string
+	// SourcesContext is an optional structural/source summary for existing RTL.
+	SourcesContext string
 	// SourceBudget caps how many characters of source context reach the LLM.
 	SourceBudget int
 	// Plan is an optional module hierarchy produced by the Planner.
@@ -227,6 +239,12 @@ func filesContext(files map[string]string) string {
 		}
 	}
 	return strings.Join(chunks, "\n\n")
+}
+
+// SourceBundle renders a source bundle within the context budget. It is used
+// by the workflow to show existing RTL to the Architect in analyze mode.
+func SourceBundle(files map[string]string, budget int) string {
+	return sourcesContext(files, budget, nil)
 }
 
 // sourcesContext renders the source bundle within budget. Small bundles are

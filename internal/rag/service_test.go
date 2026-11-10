@@ -4,7 +4,7 @@ import "testing"
 
 func TestIsIndexable(t *testing.T) {
 	indexable := []string{
-		"rtl/ibex_alu.sv", "rtl/ibex_pkg.svh", "rtl/foo.v", "rtl/bar.vh",
+		"rtl/ibex_alu.sv", "rtl/ibex_pkg.svh",
 		"rtl/baz.sva", "docs/readme.md", "docs/spec.txt", "docs/notes.rst",
 		"docs/manual.adoc",
 	}
@@ -13,7 +13,7 @@ func TestIsIndexable(t *testing.T) {
 			t.Errorf("isIndexable(%q) = false, want true", file)
 		}
 	}
-	skipped := []string{"main.go", "image.png", "config.json", "Makefile", "rtl/foo.sv.bak"}
+	skipped := []string{"main.go", "image.png", "config.json", "Makefile", "rtl/foo.sv.bak", "rtl/foo.v", "rtl/bar.vh"}
 	for _, file := range skipped {
 		if isIndexable(file) {
 			t.Errorf("isIndexable(%q) = true, want false", file)
@@ -22,7 +22,7 @@ func TestIsIndexable(t *testing.T) {
 }
 
 func TestIsSystemVerilog(t *testing.T) {
-	for _, file := range []string{"a.sv", "a.svh", "a.v", "a.vh", "a.sva"} {
+	for _, file := range []string{"a.sv", "a.svh", "a.sva"} {
 		if !isSystemVerilog(file) {
 			t.Errorf("isSystemVerilog(%q) = false, want true", file)
 		}

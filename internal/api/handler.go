@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/asemoq/sv-multi-agent/internal/events"
@@ -40,6 +42,7 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/tasks", h.submitTask)
 	mux.HandleFunc("GET /v1/tasks", h.listTasks)
 	mux.HandleFunc("GET /v1/tasks/{id}", h.getTask)
+	mux.HandleFunc("GET /v1/tasks/{id}/report", h.getReport)
 	mux.HandleFunc("GET /v1/tasks/{id}/events", h.taskEvents)
 	if h.llm != nil {
 		mux.HandleFunc("POST /v1/llm/chat", h.chatJSON)
@@ -57,8 +60,11 @@ func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) submitTask(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Prompt        string `json:"prompt"`
-		MaxIterations int    `json:"max_iterations"`
+		Prompt        string            `json:"prompt"`
+		MaxIterations int               `json:"max_iterations"`
+		SourceMode    string            `json:"source_mode"`
+		DutTop        string            `json:"dut_top"`
+		Files         map[string]string `json:"files"`
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -67,16 +73,23 @@ func (h *Handler) submitTask(w http.ResponseWriter, r *http.Request) {
 	if request.MaxIterations == 0 {
 		request.MaxIterations = 2
 	}
-	task, err := h.manager.Submit(request.Prompt, request.MaxIterations)
+	task, err := h.manager.SubmitTask(workflow.Submission{
+		Prompt:        request.Prompt,
+		MaxIterations: request.MaxIterations,
+		SourceMode:    request.SourceMode,
+		DutTop:        request.DutTop,
+		Files:         request.Files,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"task_id":   task.ID,
-		"status":    task.Status,
-		"stage":     task.Stage,
-		"workspace": task.Workspace,
+		"task_id":     task.ID,
+		"status":      task.Status,
+		"stage":       task.Stage,
+		"workspace":   task.Workspace,
+		"source_mode": task.SourceMode,
 	})
 }
 
@@ -92,6 +105,27 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *Handler) getReport(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, errors.New("task_id is required"))
+		return
+	}
+	task, ok := h.store.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("task %q not found", id))
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(task.Workspace, "reports", "report.md"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("report for task %q not found", id))
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +224,7 @@ func (h *Handler) callTool(w http.ResponseWriter, r *http.Request) {
 
 func decodeJSON(r *http.Request, target any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<20))
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 32<<20))
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("decode request: %w", err)
 	}

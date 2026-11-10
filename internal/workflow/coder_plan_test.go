@@ -87,7 +87,7 @@ func TestStepCoderWithPlanGeneratesSubmoduleAndTop(t *testing.T) {
 		VerilatorRunTimeout:   10,
 	}
 	client := llm.NewLLMClient(server.URL, "test", "test", 0.1, 5*time.Second)
-	manager, err := New(taskStore, root, client, cfg, nil, nil, nil)
+	manager, err := New(taskStore, root, client, cfg, fakeRAG{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

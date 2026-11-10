@@ -21,7 +21,12 @@ func Architect(ctx context.Context, client *llm.LLMClient, opts Options, prompt,
 		return mockArchitect(prompt)
 	}
 
-	userPrompt := promptWithContext(opts, "User request:\n"+prompt+"\n\nTask instruction:\n"+instruction)
+	userPrompt := "User request:\n" + prompt + "\n\n"
+	if strings.TrimSpace(opts.SourcesContext) != "" {
+		userPrompt += "Existing RTL sources (derive the contract from them):\n" + opts.SourcesContext + "\n\n"
+	}
+	userPrompt += "Task instruction:\n" + instruction
+	userPrompt = promptWithContext(opts, userPrompt)
 	data, err := client.ChatJSON(ctx, architectSystemPrompt, userPrompt)
 	if err != nil {
 		return failed(err.Error())

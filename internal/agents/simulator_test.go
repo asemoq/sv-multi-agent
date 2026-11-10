@@ -28,7 +28,7 @@ func TestTopModuleName(t *testing.T) {
 }
 
 func TestBuildVerilatorCommand(t *testing.T) {
-	command := buildVerilatorCommand("/tmp/build", []string{"rtl/counter.sv", "tb/tb_counter.sv"}, "tb_top")
+	command := buildVerilatorCommand(Options{}, "/tmp/build", []string{"rtl/counter.sv", "tb/tb_counter.sv"}, "tb_top")
 	for _, flag := range []string{"--trace", "--sv", "--assert", "-Wall"} {
 		if !containsValue(command, flag) {
 			t.Fatalf("missing %s in %#v", flag, command)

@@ -67,39 +67,31 @@ func Serve(cfg config.Config) error {
 	}
 	defer mcpManager.Stop()
 
-	var ragService *rag.Service
-	if cfg.RAGEnabled {
-		ragCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		service, ragErr := rag.New(ragCtx, rag.Options{
-			DatabaseURL: cfg.DatabaseURL,
-			Embedding: embeddings.Options{
-				BaseURL:            cfg.EmbeddingBaseURL,
-				APIKey:             cfg.EmbeddingAPIKey,
-				Model:              cfg.EmbeddingModel,
-				Dim:                cfg.EmbeddingDim,
-				Timeout:            time.Duration(cfg.EmbeddingTimeoutSeconds) * time.Second,
-				InsecureSkipVerify: cfg.EmbeddingInsecureSkipVerify,
-				CAFile:             cfg.EmbeddingCAFile,
-				QueryPrefix:        cfg.EmbeddingQueryPrefix,
-				BatchSize:          cfg.EmbeddingBatchSize,
-			},
-			TopK:       cfg.RAGTopK,
-			MaxChars:   cfg.RAGMaxChars,
-			MinScore:   cfg.RAGMinScore,
-			IndexTasks: cfg.RAGIndexTasks,
-		})
-		cancel()
-		if ragErr != nil {
-			if cfg.RAGRequired {
-				return fmt.Errorf("RAG is required but unavailable: %w", ragErr)
-			}
-			log.Printf("warning: RAG disabled: %v", ragErr)
-		} else {
-			ragService = service
-			defer ragService.Close()
-			log.Printf("RAG enabled (model=%s, dim=%d)", cfg.EmbeddingModel, cfg.EmbeddingDim)
-		}
+	ragCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ragService, ragErr := rag.New(ragCtx, rag.Options{
+		DatabaseURL: cfg.DatabaseURL,
+		Embedding: embeddings.Options{
+			BaseURL:            cfg.EmbeddingBaseURL,
+			APIKey:             cfg.EmbeddingAPIKey,
+			Model:              cfg.EmbeddingModel,
+			Dim:                cfg.EmbeddingDim,
+			Timeout:            time.Duration(cfg.EmbeddingTimeoutSeconds) * time.Second,
+			InsecureSkipVerify: cfg.EmbeddingInsecureSkipVerify,
+			CAFile:             cfg.EmbeddingCAFile,
+			QueryPrefix:        cfg.EmbeddingQueryPrefix,
+			BatchSize:          cfg.EmbeddingBatchSize,
+		},
+		TopK:       cfg.RAGTopK,
+		MaxChars:   cfg.RAGMaxChars,
+		MinScore:   cfg.RAGMinScore,
+		IndexTasks: cfg.RAGIndexTasks,
+	})
+	cancel()
+	if ragErr != nil {
+		return fmt.Errorf("initialize RAG: %w", ragErr)
 	}
+	defer ragService.Close()
+	log.Printf("RAG enabled (model=%s, dim=%d)", cfg.EmbeddingModel, cfg.EmbeddingDim)
 
 	hub := eventbus.NewHub()
 	manager, err := workflow.New(taskStore, cfg.WorkspaceRoot, llmClient, &cfg, ragService, ctx, hub)

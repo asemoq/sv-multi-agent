@@ -3,7 +3,8 @@
 // The sv-multi-agent service and all agents run in-process in a single Go binary:
 //
 //	svma serve                 start the sv-multi-agent service
-//	svma submit -prompt "..."  submit a task
+//	svma submit -prompt "..."  submit a generation task
+//	svma analyze -rtl <path>   analyze existing RTL
 //	svma get -task-id <id>     show a task
 //	svma wait -task-id <id>    wait until the task finishes
 //	svma list                  list tasks
@@ -52,7 +53,7 @@ func main() {
 		configCommand(os.Args[2:])
 	case "rag":
 		ragCommand(os.Args[2:])
-	case "submit", "get", "list", "wait":
+	case "submit", "analyze", "get", "list", "wait", "report":
 		applyClientConfig()
 		if err := cli.Run(os.Args[1:]); err != nil {
 			fail(err)
@@ -415,15 +416,21 @@ Usage:
   svma setup                    Configure the LLM provider (saved per user)
   svma config [show|path|edit]  Show or edit the saved configuration
   svma rag <cmd>                RAG: migrate|check|index|search|stats
-  svma submit -prompt "<text>"  Submit a task
+  svma submit -prompt "<text>"  Submit a generation task
+  svma analyze -rtl <path>      Analyze existing RTL (optional -tb, -spec, -top)
   svma get -task-id <id>        Show a task
   svma wait -task-id <id>       Wait until the task finishes
+  svma report -task-id <id>     Show the task's bug report
   svma list [-limit N]          List tasks
   svma version                  Print version
 
 Client flags:
   -addr <host:port>             sv-multi-agent address (default 127.0.0.1:50050)
-  -max-iterations N             Debug loop budget for submit (1..5)
+  -max-iterations N             Debug loop budget for submit/analyze (1..5)
+  -rtl <path>                   Existing RTL file or directory (analyze)
+  -tb <path>                    Existing testbench file or directory (analyze)
+  -spec <path>                  Specification file (analyze)
+  -top <module>                 DUT top module for linting (analyze)
   -json                         Print raw JSON instead of the live view
   -detach                       Submit and return immediately (no live view)
   -interval 2s                  Poll interval for wait -json

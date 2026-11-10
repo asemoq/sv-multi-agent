@@ -143,10 +143,11 @@ curl -s "$LLM_BASE_URL/models" -H "Authorization: Bearer $LLM_API_KEY" | head
 
 Environment variables always override the saved user config.
 
-## RAG (optional)
+## RAG (always enabled)
 
-The service can use pgvector + Qwen3-Embedding for retrieval-augmented
-generation.
+The service uses pgvector + Qwen3-Embedding for retrieval-augmented generation.
+RAG is always enabled: startup fails without Postgres or the embedding endpoint,
+and retrieval errors fail the step.
 
 1. **Postgres + pgvector** — `docker compose` starts `pgvector/pgvector:pg16`
    with user/db `svma`/`svma`; `DATABASE_URL` is wired automatically inside the
@@ -164,11 +165,7 @@ generation.
 4. **Index documents** — `svma rag index ./docs --kind docs --tag spec`.
 5. **Verify** — `svma rag check`, `svma rag search "..." -k 5`, `svma rag stats`.
 
-Completed tasks are indexed automatically (`RAG_INDEX_TASKS=1`). By default RAG
-degrades gracefully: if Postgres or the embedding endpoint is unavailable, the
-service logs a warning and runs without RAG. Set `RAG_REQUIRED=1` to make RAG
-mandatory: startup fails when RAG is unavailable, and retrieval errors fail the
-step instead of being ignored.
+Completed tasks are indexed automatically (`RAG_INDEX_TASKS=1`).
 
 `EMBEDDING_DIM` must match the column type in pgvector: `vector(N)` up to 2000
 dimensions, `halfvec(N)` above that (the default 2560 uses `halfvec(2560)`).
@@ -211,12 +208,20 @@ recreating the table (or a migration). If `/v1/embeddings` is not up yet,
 | `MAX_SOURCE_CHARS` | `24000` | Source context budget; large files become a structure map |
 | `DECOMPOSE_ENABLED` | `1` | Enable the Planner for large contracts |
 | `DECOMPOSE_MIN_LINES` | `400` | Estimated-size threshold for decomposition |
+| `CODER_CONCURRENCY` | `4` | Parallel sub-module Coder calls (`<=1` runs sequentially) |
 | `SIM_TOP_MODULE` | `tb` | Verilator top module |
 | `TRACE_WINDOW_EDGES` | `10` | Clock edges in the trace report |
 | `VERILATOR_BUILD_TIMEOUT` | `240` | Compile timeout, seconds |
 | `VERILATOR_RUN_TIMEOUT` | `60` | Simulation timeout, seconds |
-| `RAG_ENABLED` | `0` | Enable RAG (implied by `RAG_REQUIRED=1`) |
-| `RAG_REQUIRED` | `0` | Hard requirement: fail startup/step when RAG is unavailable |
+| `LINT_ENABLED` | `1` | Run `verilator --lint-only` before simulation |
+| `LINT_FAIL_ON_ERROR` | `0` | Treat every lint warning as an error |
+| `LINT_ERROR_ON` | empty | Comma-separated warning codes promoted to errors (`WIDTH,LATCH,...`) |
+| `COVERAGE_ENABLED` | `0` | Collect line/toggle coverage |
+| `COVERAGE_MIN` | `0.80` | Target line coverage |
+| `COVERAGE_ROUNDS` | `1` | Verifier rounds to add tests for uncovered lines |
+| `MUTATION_ENABLED` | `0` | Enable mutation testing |
+| `MUTATION_BUDGET` | `20` | Number of mutants to run |
+| `MUTATION_ROUNDS` | `1` | Verifier rounds to detect surviving mutants |
 | `RAG_INDEX_TASKS` | `1` | Index tasks on completion |
 | `DATABASE_URL` | `postgres://svma:svma@localhost:5433/svma?sslmode=disable` | Postgres + pgvector |
 | `EMBEDDING_BASE_URL` | `http://llm.home/v1` | OpenAI-compatible embeddings |
@@ -259,6 +264,10 @@ rtl/*.sv
 tb/*.sv
 reports/verilator.log
 reports/simulation.json
+reports/lint.log
+reports/lint.json
+reports/coverage.info       # when COVERAGE_ENABLED=1
+reports/coverage.json
 reports/trace_report.json   # on failure
 wave.vcd
 ```
@@ -279,6 +288,18 @@ go run ./cmd/svma wait -task-id <TASK_ID>
 ```
 
 Stop with `Ctrl+C`.
+
+### Analyze an existing design
+
+```bash
+svma analyze -rtl ./my_project/rtl -tb ./my_project/tb \
+  -spec ./spec.md -top my_module -max-iterations 5
+```
+
+`-tb` is optional: without it the Verifier generates a testbench from the
+contract. `-spec` (or `-prompt`) is required. The service lints the RTL before
+simulation and, with `COVERAGE_ENABLED=1`, asks the Verifier to extend the
+testbench when line coverage is below `COVERAGE_MIN`.
 
 ## 8. Verify the installation
 

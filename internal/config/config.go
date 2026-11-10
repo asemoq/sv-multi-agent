@@ -39,10 +39,23 @@ type Config struct {
 	MaxSourceChars        int
 	DecomposeEnabled      bool
 	DecomposeMinLines     int
+	// CoderConcurrency caps parallel sub-module Coder calls. <=1 is sequential.
+	CoderConcurrency int
 
-	// RAG / embeddings (optional)
-	RAGEnabled                  bool
-	RAGRequired                 bool
+	// Static lint and coverage-guided verification.
+	LintEnabled     bool
+	LintFailOnError bool
+	LintErrorOn     []string
+	CoverageEnabled bool
+	CoverageMin     float64
+	CoverageRounds  int
+	MutationEnabled bool
+	MutationBudget  int
+	MutationRounds  int
+	// MutationConcurrency caps parallel mutant simulations. <=1 is sequential.
+	MutationConcurrency int
+
+	// RAG / embeddings (always enabled)
 	DatabaseURL                 string
 	EmbeddingBaseURL            string
 	EmbeddingAPIKey             string
@@ -95,10 +108,21 @@ func Load() Config {
 		MaxSourceChars:        envInt("MAX_SOURCE_CHARS", 24000),
 		DecomposeEnabled:      envBool("DECOMPOSE_ENABLED", true),
 		DecomposeMinLines:     envInt("DECOMPOSE_MIN_LINES", 400),
+		CoderConcurrency:      envInt("CODER_CONCURRENCY", 4),
 
-		// RAG / embeddings (optional)
-		RAGRequired:                 envBool("RAG_REQUIRED", false),
-		RAGEnabled:                  envBool("RAG_ENABLED", false) || envBool("RAG_REQUIRED", false),
+		// Static lint and coverage-guided verification
+		LintEnabled:         envBool("LINT_ENABLED", true),
+		LintFailOnError:     envBool("LINT_FAIL_ON_ERROR", false),
+		LintErrorOn:         envSlice("LINT_ERROR_ON", nil),
+		CoverageEnabled:     envBool("COVERAGE_ENABLED", false),
+		CoverageMin:         envFloat("COVERAGE_MIN", 0.80),
+		CoverageRounds:      envInt("COVERAGE_ROUNDS", 1),
+		MutationEnabled:     envBool("MUTATION_ENABLED", false),
+		MutationBudget:      envInt("MUTATION_BUDGET", 20),
+		MutationRounds:      envInt("MUTATION_ROUNDS", 1),
+		MutationConcurrency: envInt("MUTATION_CONCURRENCY", 4),
+
+		// RAG / embeddings (always enabled)
 		DatabaseURL:                 env("DATABASE_URL", "postgres://svma:svma@localhost:5433/svma?sslmode=disable"),
 		EmbeddingBaseURL:            env("EMBEDDING_BASE_URL", "http://llm.home/v1"),
 		EmbeddingAPIKey:             env("EMBEDDING_API_KEY", "local"),

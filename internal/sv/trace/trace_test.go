@@ -115,6 +115,26 @@ func TestDUTLeadIsDetected(t *testing.T) {
 	}
 }
 
+func TestDUTLag2IsDetected(t *testing.T) {
+	diagnosis := DiagnoseAlignment(intValues(2, 3, 4, 5, 6), intValues(0, 1, 2, 3, 4), nil)
+	if diagnosis["best_alignment"] != "dut_lag2" {
+		t.Fatalf("best = %v", diagnosis["best_alignment"])
+	}
+	if got := rateValue(t, diagnosis, "match_rate_dut_lag2"); got != 1.0 {
+		t.Fatalf("lag2 = %v", got)
+	}
+}
+
+func TestDUTLead2IsDetected(t *testing.T) {
+	diagnosis := DiagnoseAlignment(intValues(0, 1, 2, 3, 4), intValues(2, 3, 4, 5, 6), nil)
+	if diagnosis["best_alignment"] != "dut_lead2" {
+		t.Fatalf("best = %v", diagnosis["best_alignment"])
+	}
+	if got := rateValue(t, diagnosis, "match_rate_dut_lead2"); got != 1.0 {
+		t.Fatalf("lead2 = %v", got)
+	}
+}
+
 func TestEdgeSpecificRates(t *testing.T) {
 	diagnosis := DiagnoseAlignment(
 		intValues(0, 0, 1, 1),

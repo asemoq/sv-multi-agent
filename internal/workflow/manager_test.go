@@ -9,16 +9,16 @@ import (
 	"github.com/asemoq/sv-multi-agent/internal/store"
 )
 
-func TestRAGRequiredWithoutService(t *testing.T) {
-	manager := &Manager{cfg: &config.Config{RAGRequired: true}}
+func TestRAGContextRequiresService(t *testing.T) {
+	manager := &Manager{cfg: &config.Config{}}
 	if _, err := manager.ragContext(context.Background(), "counter", nil); err == nil {
-		t.Fatal("expected RAG required error")
+		t.Fatal("expected RAG unavailable error")
 	}
 }
 
-func TestRAGOptionalWithoutService(t *testing.T) {
+func TestRAGContextEmptyQuery(t *testing.T) {
 	manager := &Manager{cfg: &config.Config{}}
-	text, err := manager.ragContext(context.Background(), "counter", nil)
+	text, err := manager.ragContext(context.Background(), "  ", nil)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}

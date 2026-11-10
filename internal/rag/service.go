@@ -391,10 +391,10 @@ func (s *Service) embedAll(ctx context.Context, documents []Document) error {
 	return nil
 }
 
-// isSystemVerilog reports whether file has a SystemVerilog/Verilog extension.
+// isSystemVerilog reports whether file has a SystemVerilog extension.
 func isSystemVerilog(file string) bool {
 	switch strings.ToLower(filepath.Ext(file)) {
-	case ".sv", ".svh", ".v", ".vh", ".sva":
+	case ".sv", ".svh", ".sva":
 		return true
 	}
 	return false

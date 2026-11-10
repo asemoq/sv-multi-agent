@@ -151,8 +151,9 @@ Debugger предпочитает:
 
 ## RAG (pgvector + Qwen3-Embedding)
 
-Опциональная «память проекта»: агенты получают top-k релевантных фрагментов из
-прошлых задач и документов и подмешивают их в промпты.
+«Память проекта»: агенты получают top-k релевантных фрагментов из прошлых задач
+и документов и подмешивают их в промпты. **RAG включён и обязателен по умолчанию** —
+сервис не стартует без Postgres/embedding, а ошибка retrieval валит шаг.
 
 - **Embeddings:** OpenAI-compatible `http://llm.home/v1`, модель
   `Qwen3-Embedding-4B`, размерность `2560`, BF16 на GPU-ноде.
@@ -164,9 +165,6 @@ Debugger предпочитает:
 - **Где используется:** Architect (`design/docs`), Coder (`rtl/docs`),
   Verifier (`testbench/docs`), Debugger (`failure/fix`).
 - **Индексация задач:** автоматически по завершении (`RAG_INDEX_TASKS=0` отключает).
-- **Обязательность:** `RAG_REQUIRED=1` — сервис не стартует без Postgres/embedding, а
-  ошибка retrieval валит шаг (а не игнорируется). При `RAG_REQUIRED=0` работает
-  graceful degradation: warning в лог и продолжение без RAG.
 
 ```bash
 svma rag migrate
@@ -195,7 +193,7 @@ svma rag search "ALU immediate operand select" -k 5
 - `--exclude` принимает имена/глобы через запятую (`ibex_core.sv`, `*_tb.sv`).
 - `--timeout` (по умолчанию `2h`) ограничивает длительную индексацию.
 - Индексатор пропускает `.git`, `node_modules`, `vendor`, `dist`, `build`,
-  `obj_dir` и файлы > 1 MiB, а также понимает `.sv/.svh/.v/.vh/.sva` и
+  `obj_dir` и файлы > 1 MiB, а также понимает `.sv/.svh/.sva` и
   `.md/.txt/.rst/.adoc`.
 - В Docker папка смонтирована как `/knowledge` (read-only):
   `docker compose exec sv-multi-agent /app/svma rag index /knowledge/ibex/rtl --kind rtl --tag repo:ibex --exclude ibex_core.sv`.
@@ -223,12 +221,21 @@ svma rag search "ALU immediate operand select" -k 5
 | `MAX_SOURCE_CHARS` | `24000` | Бюджет исходников в промпте; большие файлы → карта структуры |
 | `DECOMPOSE_ENABLED` | `1` | Включить Planner для больших контрактов |
 | `DECOMPOSE_MIN_LINES` | `400` | Порог оценки размера для декомпозиции |
+| `CODER_CONCURRENCY` | `4` | Параллельных Coder-вызовов для под-модулей (`<=1` — последовательно) |
 | `SIM_TOP_MODULE` | `tb` | Top module для Verilator |
 | `TRACE_WINDOW_EDGES` | `10` | Clock edges в trace report |
 | `VERILATOR_BUILD_TIMEOUT` | `240` | Таймаут сборки, секунды |
 | `VERILATOR_RUN_TIMEOUT` | `60` | Таймаут симуляции, секунды |
-| `RAG_ENABLED` | `0` | Включить RAG (включается автоматически при `RAG_REQUIRED=1`) |
-| `RAG_REQUIRED` | `0` | Сделать RAG обязательным: старт без RAG/ошибки retrieval = ошибка |
+| `LINT_ENABLED` | `1` | Включить статический lint (`verilator --lint-only`) |
+| `LINT_FAIL_ON_ERROR` | `0` | Падать на любом предупреждении lint |
+| `LINT_ERROR_ON` | пусто | Список warning-кодов, повышаемых до ошибок (`WIDTH,LATCH,...`) |
+| `COVERAGE_ENABLED` | `0` | Собирать line/toggle coverage |
+| `COVERAGE_MIN` | `0.80` | Целевое покрытие строк |
+| `COVERAGE_ROUNDS` | `1` | Сколько раз просить Verifier добрать тесты |
+| `MUTATION_ENABLED` | `0` | Включать mutation testing |
+| `MUTATION_BUDGET` | `20` | Сколько мутантов прогнать |
+| `MUTATION_ROUNDS` | `1` | Сколько раз просить Verifier добить выживших мутантов |
+| `MUTATION_CONCURRENCY` | `4` | Параллельных прогонов мутантов (`<=1` — последовательно) |
 | `RAG_INDEX_TASKS` | `1` | Индексировать задачи по завершении |
 | `DATABASE_URL` | `postgres://svma:svma@localhost:5433/svma?sslmode=disable` | Postgres + pgvector |
 | `EMBEDDING_BASE_URL` | `http://llm.home/v1` | OpenAI-compatible embeddings |
@@ -307,6 +314,14 @@ rtl/*.sv
 tb/*.sv
 reports/verilator.log
 reports/simulation.json
+reports/lint.log
+reports/lint.json
+reports/coverage.info       # при COVERAGE_ENABLED=1
+reports/coverage.json
+reports/mutation.json       # при MUTATION_ENABLED=1
+reports/mutation.md
+reports/report.md           # баг-репорт
+reports/report.json
 reports/trace_report.json   # при ошибке
 wave.vcd
 ```
@@ -317,9 +332,11 @@ wave.vcd
 svma setup                  # настроить LLM (Ollama / LM Studio / OpenCode / custom)
 svma config show            # показать конфигурацию
 svma serve                  # запустить sv-multi-agent
-svma submit -prompt "..."   # отправить задачу
+svma submit -prompt "..."   # отправить задачу генерации
+svma analyze -rtl <path>    # проанализировать существующий RTL
 svma wait -task-id <id>     # дождаться
 svma get / list             # состояние задач
+svma report -task-id <id>   # баг-репорт по задаче
 svma version                # версия
 ```
 
@@ -332,6 +349,54 @@ svma version                # версия
 | macOS | `~/Library/Application Support/svma/config.json` |
 
 Переменные окружения имеют приоритет над файлом.
+
+### Анализ существующего RTL
+
+В отличие от `submit`, команда `analyze` не генерирует RTL, а проверяет уже готовый код:
+
+```bash
+svma analyze \
+  -rtl ./my_project/rtl \
+  -tb ./my_project/tb \
+  -spec ./spec.md \
+  -top my_module \
+  -max-iterations 5
+```
+
+- `-rtl` — файл или директория с `.sv` / `.svh` / `.sva`;
+- `-tb` — опционально; если не передан, Verifier сгенерирует тестбенч по контракту;
+- `-spec` — описание ожидаемого поведения (обязательно, если нет `-prompt`);
+- `-top` — DUT top module для lint.
+
+Порядок шагов: `ingest → architect → lint → verifier? → simulator → debugger*`.
+Артефакты дополняются `reports/lint.log`, `reports/lint.json`, а при включённом
+coverage — `reports/coverage.info` и `reports/coverage.json`.
+
+### Mutation testing
+
+Включается опционально (`MUTATION_ENABLED=1`). После успешной симуляции сервис
+внедряет в RTL синтетические ошибки (мутанты) и проверяет, ловит ли их тестбенч:
+
+```env
+MUTATION_ENABLED=1
+MUTATION_BUDGET=20
+MUTATION_ROUNDS=1
+```
+
+Выжившие мутанты = дыры в тестах. Сервис пишет `reports/mutation.json`/`mutation.md`,
+ставит warning `mutation.weak` и опционально просит Verifier добить тесты.
+Итоговая сводка по задаче — `reports/report.md` (или `svma report -task-id <id>`).
+
+### CI
+
+`svma wait -task-id <id>` возвращает ненулевой код, если задача завершилась
+`failed`/`interrupted`, поэтому готовую задачу можно встроить в pipeline:
+
+```bash
+svma submit -prompt "..." && svma wait -task-id "$(…)" || exit 1
+```
+
+Машинный итог — `reports/report.json` в workspace задачи.
 
 ### Сборка под разные ОС
 
@@ -355,15 +420,18 @@ svma version                # версия
 
 ### Control plane
 
-- `POST /v1/tasks` body `{prompt, max_iterations?}` → `{task_id, status, stage, workspace}`.
+- `POST /v1/tasks` body `{prompt, max_iterations?, source_mode?, dut_top?, files?}` → `{task_id, status, stage, workspace, source_mode}`.
+  Для `source_mode: "analyze"` поле `files` содержит `{"rtl/module.sv": "...", "tb/tb_module.sv": "..."}`;
+  пути только относительные и только под `rtl/` или `tb/`.
 - `GET /v1/tasks/{task_id}` → объект Task.
+- `GET /v1/tasks/{task_id}/report` → баг-репорт в Markdown (`reports/report.md`).
 - `GET /v1/tasks?limit=N` → `{tasks: [...]}`.
 - `GET /healthz` → `{status: "ok"}`.
 
 ### Опциональные proxy-эндпоинты
 
-Для внешних инструментов (встроенные Go-агенты используют `internal/llm` и
-`internal/mcp` напрямую):
+Для внешних инструментов (встроенные Go-агенты используют `internal/llm`;
+MCP-сервер доступен только через proxy):
 
 - `POST /v1/llm/chat` body `{system_prompt, user_prompt}` → `{result: {...}}`.
 - `GET /v1/mcp/tools` → `{tools: [...]}`.
@@ -372,25 +440,26 @@ svma version                # версия
 ## Workflow
 
 ```text
-SubmitTask
+Submission (generate | analyze)
+    │
+    ├─ generate: Architect ──► Planner? ──► Coder
+    └─ analyze:  Ingest ─────► Architect
     │
     ▼
-Architect ──► design/contract.json
-    │
-    ├─ large design? ──► Planner ──► design/plan.json
+Lint (Verilator --lint-only)
     │
     ▼
-Coder ─────► rtl/*.sv (per sub-module, then top-level)
+Verifier ──► tb/*.sv (пропускается, если TB передан в analyze)
     │
     ▼
-Verifier ──► tb/*.sv
-    │
-    ▼
-Simulator (Verilator) ──► PASS ──► completed
+Simulator (Verilator) ──► PASS ──► Coverage? ──► completed
     │
     └── FAIL ──► trace_report.json ──► Debugger ──► block patch ──► Simulator
                                                    (до max_iterations)
 ```
+
+Coverage-цикл после PASS: если покрытие ниже `COVERAGE_MIN`, Verifier получает
+список непокрытых строк и дополняет тестбенч (`COVERAGE_ROUNDS` раз).
 
 Simulator — инструмент, а не LLM-агент: PASS/FAIL определяется Verilator и
 маркерами, а не моделью.
