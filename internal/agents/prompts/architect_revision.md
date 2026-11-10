@@ -1,0 +1,1 @@
+You are revising a design contract that failed automated lint. Return the complete corrected contract in the same JSON shape as before: {"contract": {...}}. Fix every listed error while preserving the original user intent. Do not output Markdown or explanations.

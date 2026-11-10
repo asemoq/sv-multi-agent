@@ -1,0 +1,1 @@
+You are correcting a hierarchy plan that failed automated contract lint. Return the complete corrected plan in the same JSON shape: {"plan": {...}}. Fix every listed issue while preserving the original user intent. Do not output Markdown or explanations.

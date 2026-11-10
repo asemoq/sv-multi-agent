@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: svma
+      POSTGRES_PASSWORD: svma
+      POSTGRES_DB: svma
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U svma -d svma"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  sv-multi-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Verilator is installed inside the service image (it is a local CLI,
+        # not a network service). Override the apt package if needed.
+        VERILATOR_PKG: ${VERILATOR_PKG:-verilator}
+    image: sv-multi-agent:local
+    environment:
+      LISTEN_ADDR: ":50050"
+      WORKSPACE_ROOT: /workspace
+      DATA_DIR: /data
+      # RAG / pgvector
+      RAG_ENABLED: ${RAG_ENABLED:-1}
+      RAG_REQUIRED: ${RAG_REQUIRED:-0}
+      RAG_INDEX_TASKS: ${RAG_INDEX_TASKS:-1}
+      DATABASE_URL: postgres://svma:svma@postgres:5432/svma?sslmode=disable
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://llm.home/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-local}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen3-Embedding-4B}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-2560}
+      EMBEDDING_INSECURE_SKIP_VERIFY: ${EMBEDDING_INSECURE_SKIP_VERIFY:-0}
+      EMBEDDING_CA_FILE: ${EMBEDDING_CA_FILE:-}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-60}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-4}
+      RAG_TOP_K: ${RAG_TOP_K:-6}
+      RAG_MAX_CHARS: ${RAG_MAX_CHARS:-12000}
+      RAG_MIN_SCORE: ${RAG_MIN_SCORE:-0.2}
+      # LLM configuration: opencode-go (OpenCode Go, OpenAI-compatible API)
+      # Go/Go Plus endpoint: https://opencode.ai/inference/go/openai/v1
+      # (pay-as-you-go Console uses https://opencode.ai/inference/openai/v1)
+      # Put your OpenCode API key (oc_sk_...) in .env as LLM_API_KEY.
+      LLM_MODE: ${LLM_MODE:-openai-compatible}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://opencode.ai/inference/go/openai/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4.1-flash}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.1}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-180}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-32768}
+      SVMA_VERBOSE: ${SVMA_VERBOSE:-0}
+      # MCP configuration (empty MCP_COMMAND disables MCP)
+      MCP_COMMAND: ${MCP_COMMAND:-}
+      MCP_INIT_PARAMS: ${MCP_INIT_PARAMS:-}
+      # Agent / simulation configuration
+      ARCHITECT_MAX_REVISIONS: ${ARCHITECT_MAX_REVISIONS:-2}
+      CONTRACT_ONLY: ${CONTRACT_ONLY:-1}
+      MAX_SOURCE_CHARS: ${MAX_SOURCE_CHARS:-24000}
+      DECOMPOSE_ENABLED: ${DECOMPOSE_ENABLED:-1}
+      DECOMPOSE_MIN_LINES: ${DECOMPOSE_MIN_LINES:-400}
+      SIM_TOP_MODULE: ${SIM_TOP_MODULE:-tb}
+      TRACE_WINDOW_EDGES: ${TRACE_WINDOW_EDGES:-10}
+      VERILATOR_BUILD_TIMEOUT: ${VERILATOR_BUILD_TIMEOUT:-240}
+      VERILATOR_RUN_TIMEOUT: ${VERILATOR_RUN_TIMEOUT:-60}
+    ports:
+      - "127.0.0.1:50050:50050"
+    volumes:
+      - ./workspace:/workspace
+      - ./data:/data
+      - ./knowledge:/knowledge:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    extra_hosts:
+      - "llm.home:192.168.1.100"
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
