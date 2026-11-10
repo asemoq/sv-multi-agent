@@ -8,4 +8,4 @@ data/*
 knowledge/*
 !knowledge/.gitkeep
 .run/
-.idea/
+.idea
