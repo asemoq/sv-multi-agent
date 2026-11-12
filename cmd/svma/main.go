@@ -3,8 +3,11 @@
 // The sv-multi-agent service and all agents run in-process in a single Go binary:
 //
 //	svma serve                 start the sv-multi-agent service
+//	svma tui                   open the interactive terminal client
 //	svma submit -prompt "..."  submit a generation task
 //	svma analyze -rtl <path>   analyze existing RTL
+//	svma refactor -rtl <path>  refactor existing RTL
+//	svma review -rtl <path>    find bugs in existing RTL
 //	svma get -task-id <id>     show a task
 //	svma wait -task-id <id>    wait until the task finishes
 //	svma list                  list tasks
@@ -31,6 +34,7 @@ import (
 	"github.com/asemoq/sv-multi-agent/internal/embeddings"
 	"github.com/asemoq/sv-multi-agent/internal/rag"
 	"github.com/asemoq/sv-multi-agent/internal/setup"
+	"github.com/asemoq/sv-multi-agent/internal/tui"
 	"github.com/asemoq/sv-multi-agent/internal/userconfig"
 )
 
@@ -53,7 +57,20 @@ func main() {
 		configCommand(os.Args[2:])
 	case "rag":
 		ragCommand(os.Args[2:])
-	case "submit", "analyze", "get", "list", "wait", "report":
+	case "tui":
+		applyClientConfig()
+		tuiFlags := flag.NewFlagSet("tui", flag.ContinueOnError)
+		tuiAddr := tuiFlags.String("addr", os.Getenv("SVMA_ADDR"), "sv-multi-agent HTTP address")
+		if err := tuiFlags.Parse(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fail(err)
+		}
+		if err := tui.Run(*tuiAddr); err != nil {
+			fail(err)
+		}
+	case "submit", "analyze", "refactor", "review", "get", "list", "wait", "report":
 		applyClientConfig()
 		if err := cli.Run(os.Args[1:]); err != nil {
 			fail(err)
@@ -413,11 +430,14 @@ func usage() {
 
 Usage:
   svma serve                    Start the sv-multi-agent service (agents run in-process)
+  svma tui                      Open the interactive terminal client
   svma setup                    Configure the LLM provider (saved per user)
   svma config [show|path|edit]  Show or edit the saved configuration
   svma rag <cmd>                RAG: migrate|check|index|search|stats
   svma submit -prompt "<text>"  Submit a generation task
   svma analyze -rtl <path>      Analyze existing RTL (optional -tb, -spec, -top)
+  svma refactor -rtl <path>     Refactor existing RTL (instruction via -prompt/-spec)
+  svma review -rtl <path>       Find functional bugs in existing RTL
   svma get -task-id <id>        Show a task
   svma wait -task-id <id>       Wait until the task finishes
   svma report -task-id <id>     Show the task's bug report

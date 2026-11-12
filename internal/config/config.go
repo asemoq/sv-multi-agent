@@ -32,6 +32,8 @@ type Config struct {
 	VerilatorRunTimeout   int
 	TopModule             string
 	TraceWindowEdges      int
+	// SimTool selects the simulator backend: "verilator" or "questa".
+	SimTool string
 
 	// Agent behaviour configuration forwarded to workers
 	ArchitectMaxRevisions int
@@ -101,6 +103,7 @@ func Load() Config {
 		VerilatorRunTimeout:   envInt("VERILATOR_RUN_TIMEOUT", 60),
 		TopModule:             env("SIM_TOP_MODULE", "tb"),
 		TraceWindowEdges:      envInt("TRACE_WINDOW_EDGES", 10),
+		SimTool:               env("SIM_TOOL", "verilator"),
 
 		// Agent behaviour
 		ArchitectMaxRevisions: envInt("ARCHITECT_MAX_REVISIONS", 2),

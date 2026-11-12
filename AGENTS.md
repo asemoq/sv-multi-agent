@@ -39,11 +39,12 @@ Debugger) run in-process in one binary.
 ## Repository map
 
 ```
-  cmd/svma/main.go                # unified CLI: serve + submit/analyze/get/list/wait/setup/config/version
+  cmd/svma/main.go                # unified CLI: serve + tui + submit/analyze/get/list/wait/setup/config/version
   cmd/sv-multi-agent/main.go        # thin wrapper around internal/app
   cmd/svctl/main.go               # thin wrapper around internal/cli
   internal/app/app.go             # sv-multi-agent wiring (LLM/MCP, store, HTTP server)
-  internal/agents/                # Architect, Planner, Coder, Verifier, Simulator, Debugger, Lint
+  internal/agents/                # Architect, Planner, Coder, Verifier, Simulator, Debugger, Lint, Refactor, BugHunter
+  internal/tui/                   # interactive terminal client (Bubble Tea) for the HTTP control plane
   internal/sv/contract/           # design contract normalize + lint + size heuristic
   internal/sv/coverage/           # LCOV parser for coverage-guided verification
   internal/sv/markers/            # simulation marker protocol

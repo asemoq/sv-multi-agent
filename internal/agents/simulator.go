@@ -3,11 +3,11 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,8 +35,8 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 	if len(rtl) == 0 || len(tb) == 0 {
 		return failed("Expected at least one SystemVerilog source under rtl/ and one testbench under tb/")
 	}
-	if _, err := exec.LookPath("verilator"); err != nil {
-		return failed("Verilator is not installed on PATH")
+	if err := checkSimTool(opts); err != nil {
+		return failed(err.Error())
 	}
 
 	tmpDir, err := os.MkdirTemp("", "svma-sim-*")
@@ -62,11 +62,7 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 		}
 	}
 
-	buildDir := filepath.Join(tmpDir, "build", "obj_dir")
 	reportDir := filepath.Join(tmpDir, "reports")
-	if err := os.MkdirAll(buildDir, 0o755); err != nil {
-		return failed(err.Error())
-	}
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return failed(err.Error())
 	}
@@ -77,39 +73,26 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 			relativeSources = append(relativeSources, filepath.ToSlash(path))
 		}
 	}
-	sort.Strings(relativeSources)
+	relativeSources = orderSourcesForVerilator(relativeSources, sources)
 	if len(relativeSources) == 0 {
 		return failed("Expected at least one .sv compilation unit under rtl/ or tb/")
 	}
 
 	topModule := topModuleName(opts)
-	command := buildVerilatorCommand(opts, buildDir, relativeSources, topModule)
-	logx.Debugf("simulator: command: %s", strings.Join(command, " "))
-
-	compileLog, compileCode, compileTimedOut := runCommand(ctx, tmpDir, command, opts.VerilatorBuildTimeout)
-	runLog := ""
-	runCode := 0
-	runTimedOut := false
+	compileLog, compileCode, runLog, runCode, timedOut := compileAndRun(ctx, opts, tmpDir, relativeSources, topModule)
 	combined := compileLog
 	if compileCode == 0 {
-		executable := filepath.Join(buildDir, "V"+topModule)
-		if _, statErr := os.Stat(executable); statErr != nil {
-			runLog = "Verilator build completed but build/obj_dir/V" + topModule + " was not created."
-			runCode = 127
-		} else {
-			runLog, runCode, runTimedOut = runCommand(ctx, tmpDir, []string{executable}, opts.VerilatorRunTimeout)
-		}
 		combined = compileLog + "\n--- SIMULATION ---\n" + runLog
 	}
-	logx.Debugf("simulator: compile exit=%d timed_out=%t log:\n%s", compileCode, compileTimedOut, compileLog)
-	logx.Debugf("simulator: run exit=%d timed_out=%t log:\n%s", runCode, runTimedOut, runLog)
+	logx.Debugf("simulator: compile exit=%d log:\n%s", compileCode, compileLog)
+	logx.Debugf("simulator: run exit=%d log:\n%s", runCode, runLog)
 
-	if compileTimedOut || runTimedOut {
-		log := combined + "\nVerilator command timed out."
+	if timedOut {
+		log := combined + "\nSimulation command timed out."
 		_ = os.WriteFile(filepath.Join(reportDir, "verilator.log"), []byte(log), 0o644)
-		result := failed("Verilator timed out")
+		result := failed("Simulation timed out")
 		result.Passed = false
-		result.Issues = []Issue{{Severity: "error", Code: "simulator.timeout", Message: "Verilator timed out"}}
+		result.Issues = []Issue{{Severity: "error", Code: "simulator.timeout", Message: "Simulation timed out"}}
 		result.Artifacts = []Artifact{{Path: "reports/verilator.log", Content: truncateTail(log, 50000)}}
 		return result
 	}
@@ -135,7 +118,14 @@ func Simulator(ctx context.Context, opts Options, files map[string]string, contr
 	var coverageReport *coverage.Report
 	coverageArtifacts := []Artifact{}
 	if opts.CoverageEnabled && compileOK {
-		report, artifacts, coverageIssue := collectCoverage(ctx, tmpDir, reportDir)
+		var report *coverage.Report
+		var artifacts []Artifact
+		var coverageIssue Issue
+		if opts.SimTool == "questa" {
+			report, artifacts, coverageIssue = collectCoverageQuesta(ctx, tmpDir, reportDir)
+		} else {
+			report, artifacts, coverageIssue = collectCoverage(ctx, tmpDir, reportDir)
+		}
 		coverageReport = report
 		coverageArtifacts = artifacts
 		if coverageIssue.Code != "" {
@@ -218,6 +208,120 @@ func buildVerilatorCommand(opts Options, buildDir string, sources []string, topM
 		command = append(command, "--coverage-line", "--coverage-toggle")
 	}
 	return append(command, sources...)
+}
+
+// checkSimTool verifies the selected simulator backend is available.
+func checkSimTool(opts Options) error {
+	if opts.SimTool == "questa" {
+		for _, tool := range []string{"vlib", "vlog", "vsim"} {
+			if _, err := exec.LookPath(tool); err != nil {
+				return fmt.Errorf("QuestaSim tool %q is not installed on PATH", tool)
+			}
+		}
+		return nil
+	}
+	if _, err := exec.LookPath("verilator"); err != nil {
+		return fmt.Errorf("Verilator is not installed on PATH")
+	}
+	return nil
+}
+
+// compileAndRun dispatches to the selected simulator backend.
+func compileAndRun(ctx context.Context, opts Options, tmpDir string, sources []string, topModule string) (compileLog string, compileCode int, runLog string, runCode int, timedOut bool) {
+	if opts.SimTool == "questa" {
+		return compileAndRunQuesta(ctx, opts, tmpDir, sources, topModule)
+	}
+	return compileAndRunVerilator(ctx, opts, tmpDir, sources, topModule)
+}
+
+func compileAndRunVerilator(ctx context.Context, opts Options, tmpDir string, sources []string, topModule string) (string, int, string, int, bool) {
+	buildDir := filepath.Join(tmpDir, "build", "obj_dir")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		return err.Error(), 1, "", 0, false
+	}
+	command := buildVerilatorCommand(opts, buildDir, sources, topModule)
+	logx.Debugf("simulator: command: %s", strings.Join(command, " "))
+	compileLog, compileCode, compileTimedOut := runCommand(ctx, tmpDir, command, opts.VerilatorBuildTimeout)
+	if compileTimedOut || compileCode != 0 {
+		return compileLog, compileCode, "", 0, compileTimedOut
+	}
+	executable := filepath.Join(buildDir, "V"+topModule)
+	if _, statErr := os.Stat(executable); statErr != nil {
+		return compileLog, compileCode, "Verilator build completed but build/obj_dir/V" + topModule + " was not created.", 127, false
+	}
+	runLog, runCode, runTimedOut := runCommand(ctx, tmpDir, []string{executable}, opts.VerilatorRunTimeout)
+	return compileLog, compileCode, runLog, runCode, runTimedOut
+}
+
+func compileAndRunQuesta(ctx context.Context, opts Options, tmpDir string, sources []string, topModule string) (string, int, string, int, bool) {
+	// Create the work library and compile all sources into it.
+	if _, code, timedOut := runCommand(ctx, tmpDir, []string{"vlib", "work"}, 60); timedOut || code != 0 {
+		return "vlib work failed", code, "", 0, timedOut
+	}
+	compileArgs := []string{"vlog", "-sv", "-suppress", "2244"}
+	if opts.CoverageEnabled {
+		compileArgs = append(compileArgs, "+cover=sb")
+	}
+	compileArgs = append(compileArgs, "-work", "work")
+	compileArgs = append(compileArgs, sources...)
+	logx.Debugf("simulator: command: %s", strings.Join(compileArgs, " "))
+	compileLog, compileCode, compileTimedOut := runCommand(ctx, tmpDir, compileArgs, opts.VerilatorBuildTimeout)
+	if compileTimedOut || compileCode != 0 {
+		return compileLog, compileCode, "", 0, compileTimedOut
+	}
+	// Run the simulation in console (batch) mode and quit after run -all.
+	simDo := "run -all; quit -f"
+	simArgs := []string{"vsim"}
+	if opts.CoverageEnabled {
+		simArgs = append(simArgs, "-coverage")
+		simDo = "coverage save -onexit cov.ucdb; run -all; quit -f"
+	}
+	simArgs = append(simArgs, "-c", "-do", simDo, "work."+topModule)
+	logx.Debugf("simulator: command: %s", strings.Join(simArgs, " "))
+	runLog, runCode, runTimedOut := runCommand(ctx, tmpDir, simArgs, opts.VerilatorRunTimeout)
+	return compileLog, compileCode, normalizeQuestaTranscript(runLog), runCode, runTimedOut
+}
+
+// normalizeQuestaTranscript strips the "# " prefix QuestaSim adds to $display
+// output so the marker protocol can be parsed as plain text.
+func normalizeQuestaTranscript(log string) string {
+	if !strings.Contains(log, "# ") {
+		return log
+	}
+	lines := strings.Split(log, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimPrefix(line, "# ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// collectCoverageQuesta converts a QuestaSim UCDB into a line-coverage report
+// using `vcover report -details`.
+func collectCoverageQuesta(ctx context.Context, tmpDir, reportDir string) (*coverage.Report, []Artifact, Issue) {
+	ucdb := filepath.Join(tmpDir, "cov.ucdb")
+	if _, err := os.Stat(ucdb); err != nil {
+		return nil, nil, Issue{Severity: "warning", Code: "coverage.data", Message: "cov.ucdb was not produced; coverage collection skipped"}
+	}
+	tool, err := exec.LookPath("vcover")
+	if err != nil {
+		return nil, nil, Issue{Severity: "warning", Code: "coverage.tool", Message: "vcover is not installed on PATH; coverage collection skipped"}
+	}
+	txtPath := filepath.Join(reportDir, "coverage.txt")
+	logText, exitCode, timedOut := runCommand(ctx, tmpDir, []string{tool, "report", "-details", "-output", txtPath, ucdb}, 120)
+	if timedOut || exitCode != 0 {
+		return nil, nil, Issue{Severity: "warning", Code: "coverage.convert", Message: "vcover report failed: " + truncateTail(logText, 1000)}
+	}
+	data, err := os.ReadFile(txtPath)
+	if err != nil {
+		return nil, nil, Issue{Severity: "warning", Code: "coverage.read", Message: "read coverage report: " + err.Error()}
+	}
+	report := coverage.ParseQuestaDetails(data)
+	serialized, _ := json.MarshalIndent(report, "", "  ")
+	artifacts := []Artifact{
+		{Path: "reports/coverage.txt", Content: string(data)},
+		{Path: "reports/coverage.json", Content: string(serialized)},
+	}
+	return &report, artifacts, Issue{}
 }
 
 func collectCoverage(ctx context.Context, tmpDir, reportDir string) (*coverage.Report, []Artifact, Issue) {
@@ -325,10 +429,10 @@ func extractIssue(log string) Issue {
 
 func summaryText(passed, compileOK bool, runLog string, parsed markers.Result) string {
 	if passed {
-		return "Verilator compile and simulation passed."
+		return "Compile and simulation passed."
 	}
 	if !compileOK {
-		return "Verilator compilation failed. See reports/verilator.log."
+		return "Compilation failed. See reports/verilator.log."
 	}
 	if parsed.FailedMarker || (parsed.MismatchCount != nil && *parsed.MismatchCount > 0) {
 		count := "unknown number of"

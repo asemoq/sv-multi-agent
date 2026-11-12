@@ -72,46 +72,11 @@ func Run(args []string) error {
 			"max_iterations": *maxIterations,
 		}, *jsonOut, *detach, *timeout)
 	case "analyze":
-		text := strings.TrimSpace(*prompt)
-		if *specPath != "" {
-			data, err := os.ReadFile(*specPath)
-			if err != nil {
-				return fmt.Errorf("read spec: %w", err)
-			}
-			spec := strings.TrimSpace(string(data))
-			if spec != "" {
-				if text != "" {
-					text = spec + "\n\n" + text
-				} else {
-					text = spec
-				}
-			}
-		}
-		if text == "" {
-			return fmt.Errorf("-prompt or -spec is required")
-		}
-		if *rtlPath == "" {
-			return fmt.Errorf("-rtl is required")
-		}
-		files := map[string]string{}
-		if err := collectSourceDir(*rtlPath, "rtl", files); err != nil {
-			return err
-		}
-		if *tbPath != "" {
-			if err := collectSourceDir(*tbPath, "tb", files); err != nil {
-				return err
-			}
-		}
-		if err := checkBundleSize(files); err != nil {
-			return err
-		}
-		return submitTask(base, client, map[string]any{
-			"prompt":         text,
-			"max_iterations": *maxIterations,
-			"source_mode":    "analyze",
-			"dut_top":        *dutTop,
-			"files":          files,
-		}, *jsonOut, *detach, *timeout)
+		return sourceSubmission(base, client, *prompt, *specPath, *rtlPath, *tbPath, *dutTop, "analyze", *maxIterations, *jsonOut, *detach, *timeout)
+	case "refactor":
+		return sourceSubmission(base, client, *prompt, *specPath, *rtlPath, *tbPath, *dutTop, "refactor", *maxIterations, *jsonOut, *detach, *timeout)
+	case "review":
+		return sourceSubmission(base, client, *prompt, *specPath, *rtlPath, *tbPath, *dutTop, "review", *maxIterations, *jsonOut, *detach, *timeout)
 	case "get":
 		if *taskID == "" {
 			return fmt.Errorf("-task-id is required")
@@ -168,6 +133,51 @@ func submitTask(base string, client *http.Client, payload map[string]any, jsonOu
 		return fmt.Errorf("server did not return task_id")
 	}
 	return streamTaskEvents(base, id, timeout)
+}
+
+// sourceSubmission packages the -rtl/-tb sources and submits a source-mode task
+// (analyze or refactor).
+func sourceSubmission(base string, client *http.Client, prompt, specPath, rtlPath, tbPath, dutTop, mode string, maxIterations int, jsonOut, detach bool, timeout time.Duration) error {
+	text := strings.TrimSpace(prompt)
+	if specPath != "" {
+		data, err := os.ReadFile(specPath)
+		if err != nil {
+			return fmt.Errorf("read spec: %w", err)
+		}
+		spec := strings.TrimSpace(string(data))
+		if spec != "" {
+			if text != "" {
+				text = spec + "\n\n" + text
+			} else {
+				text = spec
+			}
+		}
+	}
+	if text == "" {
+		return fmt.Errorf("-prompt or -spec is required")
+	}
+	if rtlPath == "" {
+		return fmt.Errorf("-rtl is required")
+	}
+	files := map[string]string{}
+	if err := collectSourceDir(rtlPath, "rtl", files); err != nil {
+		return err
+	}
+	if tbPath != "" {
+		if err := collectSourceDir(tbPath, "tb", files); err != nil {
+			return err
+		}
+	}
+	if err := checkBundleSize(files); err != nil {
+		return err
+	}
+	return submitTask(base, client, map[string]any{
+		"prompt":         text,
+		"max_iterations": maxIterations,
+		"source_mode":    mode,
+		"dut_top":        dutTop,
+		"files":          files,
+	}, jsonOut, detach, timeout)
 }
 
 // collectSourceDir adds an RTL/TB file or directory tree to the upload bundle.
@@ -237,7 +247,7 @@ func checkBundleSize(files map[string]string) error {
 
 func isCLIHDL(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".sv", ".svh", ".sva":
+	case ".sv", ".svh", ".sva", ".v", ".vh":
 		return true
 	default:
 		return false

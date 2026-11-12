@@ -186,3 +186,103 @@ func normalizePath(path, root string) string {
 	}
 	return filepath.ToSlash(path)
 }
+
+// ParseQuestaDetails parses the "Statement Details" sections of a
+// `vcover report -details` text report into a line-coverage Report. It
+// aggregates statement hits per source line and per file.
+func ParseQuestaDetails(data []byte) Report {
+	hits := map[string]map[int]int{} // path -> line -> max statement count
+	current := ""
+	inStatements := false
+
+	for _, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "Statement Coverage for instance"):
+			inStatements = true
+			current = ""
+			continue
+		case strings.HasPrefix(line, "Branch Coverage for instance"):
+			inStatements = false
+			current = ""
+			continue
+		case strings.HasPrefix(line, "==="):
+			inStatements = false
+			current = ""
+			continue
+		}
+		if !inStatements {
+			continue
+		}
+		if strings.HasPrefix(line, "File ") {
+			current = normalizePath(strings.TrimPrefix(line, "File "), "")
+			if current == "" {
+				continue
+			}
+			if _, ok := hits[current]; !ok {
+				hits[current] = map[int]int{}
+			}
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		if number, count, ok := parseQuestaStatementRow(line); ok {
+			existing, exists := hits[current][number]
+			if !exists || count > existing {
+				hits[current][number] = count
+			}
+		}
+	}
+
+	report := Report{Files: []File{}}
+	for path, lineHits := range hits {
+		numbers := make([]int, 0, len(lineHits))
+		for number := range lineHits {
+			numbers = append(numbers, number)
+		}
+		sort.Ints(numbers)
+		lines := make([]Line, 0, len(numbers))
+		for _, number := range numbers {
+			lines = append(lines, Line{Number: number, Count: lineHits[number]})
+		}
+		file := File{Path: path, Lines: lines, LinesTotal: len(lines)}
+		for _, entry := range lines {
+			if entry.Count > 0 {
+				file.LinesCovered++
+			}
+		}
+		report.LinesTotal += file.LinesTotal
+		report.LinesCovered += file.LinesCovered
+		report.Files = append(report.Files, file)
+	}
+	sort.Slice(report.Files, func(i, j int) bool { return report.Files[i].Path < report.Files[j].Path })
+	if report.LinesTotal > 0 {
+		report.LineCoverage = float64(report.LinesCovered) / float64(report.LinesTotal)
+	}
+	return report
+}
+
+// parseQuestaStatementRow parses a "<line> <item> <count>" row. A missed
+// statement is rendered as "***0***".
+func parseQuestaStatementRow(line string) (int, int, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return 0, 0, false
+	}
+	number, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	if _, err := strconv.Atoi(fields[1]); err != nil {
+		return 0, 0, false
+	}
+	if strings.HasPrefix(fields[2], "*") {
+		return number, 0, true
+	}
+	count, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return 0, 0, false
+	}
+	return number, count, true
+}

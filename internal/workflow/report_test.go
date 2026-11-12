@@ -106,7 +106,7 @@ func TestStepMutationSkipsWithoutVerilator(t *testing.T) {
 	}
 	task := &store.Task{ID: "task-1", Workspace: workspaceDir, Steps: []store.Step{}}
 
-	manager.stepMutation(context.Background(), task)
+	manager.stepMutation(context.Background(), task, nil)
 
 	if len(task.Steps) != 1 || task.Steps[0].Name != "mutation" {
 		t.Fatalf("steps = %#v", task.Steps)

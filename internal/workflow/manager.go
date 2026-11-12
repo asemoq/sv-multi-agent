@@ -105,14 +105,14 @@ func (m *Manager) SubmitTask(submission Submission) (*store.Task, error) {
 	if sourceMode == "" {
 		sourceMode = "generate"
 	}
-	if sourceMode != "generate" && sourceMode != "analyze" {
-		return nil, fmt.Errorf("source_mode must be generate or analyze")
+	if sourceMode != "generate" && sourceMode != "analyze" && sourceMode != "refactor" && sourceMode != "review" {
+		return nil, fmt.Errorf("source_mode must be generate, analyze, refactor or review")
 	}
 	files := submission.Files
 	if sourceMode == "generate" && len(files) > 0 {
-		return nil, fmt.Errorf("source files are only supported in analyze mode")
+		return nil, fmt.Errorf("source files are only supported in analyze/refactor/review mode")
 	}
-	if sourceMode == "analyze" {
+	if sourceMode == "analyze" || sourceMode == "refactor" || sourceMode == "review" {
 		if err := validateSourceFiles(files); err != nil {
 			return nil, err
 		}
@@ -168,7 +168,7 @@ func validateSourceFiles(files map[string]string) error {
 			return fmt.Errorf("unsafe source path %q", path)
 		}
 		if !isHDLPath(normalized) {
-			return fmt.Errorf("unsupported source file %q (expected .sv, .svh or .sva)", path)
+			return fmt.Errorf("unsupported source file %q (expected .sv, .svh, .sva, .v or .vh)", path)
 		}
 		if !strings.HasPrefix(normalized, "rtl/") && !strings.HasPrefix(normalized, "tb/") {
 			return fmt.Errorf("source path %q must be under rtl/ or tb/", path)
@@ -181,7 +181,7 @@ func validateSourceFiles(files map[string]string) error {
 		}
 	}
 	if !hasRTL {
-		return fmt.Errorf("analyze mode requires at least one SystemVerilog compilation unit (.sv) under rtl/")
+		return fmt.Errorf("analyze mode requires at least one SystemVerilog compilation unit (.sv or .v) under rtl/")
 	}
 	return nil
 }
@@ -203,7 +203,7 @@ func safeSourcePath(path string) bool {
 
 func isHDLPath(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".sv", ".svh", ".sva":
+	case ".sv", ".svh", ".sva", ".v", ".vh":
 		return true
 	default:
 		return false
@@ -212,7 +212,7 @@ func isHDLPath(path string) bool {
 
 func isCompilationPath(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".sv":
+	case ".sv", ".v":
 		return true
 	default:
 		return false
@@ -259,12 +259,36 @@ func (m *Manager) run(task *store.Task, sourceFiles map[string]string) {
 		m.writeReport(task, simulation, fix)
 	}()
 
-	if task.SourceMode == "analyze" {
+	if task.SourceMode == "analyze" || task.SourceMode == "refactor" || task.SourceMode == "review" {
 		m.setStatus(task, "running", "ingest")
 		if err := m.stepIngest(task, sourceFiles); err != nil {
 			m.fail(task, "ingest", err)
 			return
 		}
+	}
+
+	// refactor mode: transform the existing RTL, then fall through to the
+	// analyze verification flow (architect -> lint -> verifier? -> simulator ->
+	// debug). The original sources are preserved under original/.
+	if task.SourceMode == "refactor" {
+		if err := m.stepRefactor(ctx, task); err != nil {
+			m.fail(task, "refactor", err)
+			return
+		}
+	}
+
+	// review mode: report suspected bugs only; never modifies or simulates.
+	if task.SourceMode == "review" {
+		if err := m.stepBugHunt(ctx, task); err != nil {
+			m.fail(task, "review", err)
+			return
+		}
+		summary := "Review completed; no bugs found."
+		if len(task.Issues) > 0 {
+			summary = fmt.Sprintf("Review found %d suspected bug(s).", len(task.Issues))
+		}
+		m.complete(task, summary)
+		return
 	}
 
 	m.setStatus(task, "running", "architect")
@@ -279,7 +303,7 @@ func (m *Manager) run(task *store.Task, sourceFiles map[string]string) {
 	}
 
 	var plan *agents.Plan
-	if task.SourceMode != "analyze" && m.shouldDecompose(task) {
+	if task.SourceMode == "generate" && m.shouldDecompose(task) {
 		plan, err = m.stepPlanner(ctx, task)
 		if err != nil {
 			m.fail(task, "planner", err)
@@ -287,9 +311,9 @@ func (m *Manager) run(task *store.Task, sourceFiles map[string]string) {
 		}
 	}
 
-	if task.SourceMode == "analyze" {
+	if task.SourceMode == "analyze" || task.SourceMode == "refactor" {
 		if !hasRTL(files) {
-			m.fail(task, "coder", fmt.Errorf("analyze mode requires at least one RTL source under rtl/"))
+			m.fail(task, "coder", fmt.Errorf("%s mode requires at least one RTL source under rtl/", task.SourceMode))
 			return
 		}
 	} else if err := m.stepCoder(ctx, task, plan); err != nil {
@@ -302,7 +326,7 @@ func (m *Manager) run(task *store.Task, sourceFiles map[string]string) {
 		return
 	}
 
-	if task.SourceMode != "analyze" || !hasTB(files) {
+	if task.SourceMode == "generate" || !hasTB(files) {
 		if err := m.stepVerifier(ctx, task); err != nil {
 			m.fail(task, "verifier", err)
 			return
@@ -339,7 +363,7 @@ func (m *Manager) run(task *store.Task, sourceFiles map[string]string) {
 	}
 
 	if passed {
-		m.stepMutation(ctx, task)
+		m.stepMutation(ctx, task, simulation)
 	}
 
 	if passed {
@@ -378,6 +402,123 @@ func (m *Manager) stepIngest(task *store.Task, files map[string]string) error {
 	return m.store.Save(task)
 }
 
+func (m *Manager) stepRefactor(ctx context.Context, task *store.Task) error {
+	index := m.beginStep(task, "refactor")
+	files, err := m.filesMap(task)
+	if err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+
+	// Preserve the original sources under original/ so nothing is lost.
+	original := map[string]string{}
+	for path, content := range files {
+		if strings.HasPrefix(path, "rtl/") || strings.HasPrefix(path, "tb/") {
+			original[path] = content
+		}
+	}
+	for path, content := range original {
+		if err := writeArtifact(task.Workspace, "original/"+path, content); err != nil {
+			m.finishStep(task, index, "failed", err.Error())
+			return err
+		}
+	}
+
+	opts := m.agentOptions()
+	contextText, err := m.ragContext(ctx, task.Prompt, []string{"rtl", "docs"})
+	if err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+	opts.Context = contextText
+	result := agents.Refactor(ctx, m.llm, opts, files, task.Prompt)
+	if result.Status == "failed" {
+		m.finishStep(task, index, "failed", result.Summary)
+		return fmt.Errorf("refactor step failed: %s", result.Summary)
+	}
+	if err := m.applyResultArtifacts(task, result, "refactor"); err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+	for _, path := range result.DeletePaths {
+		if strings.HasPrefix(path, "rtl/") || strings.HasPrefix(path, "tb/") {
+			target := filepath.Join(task.Workspace, filepath.FromSlash(path))
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				m.finishStep(task, index, "failed", err.Error())
+				return err
+			}
+		}
+	}
+
+	if err := writeArtifact(task.Workspace, "reports/refactor.md", buildRefactorMarkdown(result, original)); err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+	task.Artifacts = appendArtifact(task.Artifacts, store.Artifact{Path: "reports/refactor.md", Role: "refactor"})
+
+	m.finishStep(task, index, "completed", result.Summary)
+	return m.store.Save(task)
+}
+
+func buildRefactorMarkdown(result *agents.Result, original map[string]string) string {
+	var builder strings.Builder
+	builder.WriteString("# Refactor changes\n\n")
+	builder.WriteString(result.Summary + "\n")
+
+	if len(result.Artifacts) > 0 {
+		builder.WriteString("\n## Written files\n\n")
+		for _, artifact := range result.Artifacts {
+			marker := "created  "
+			if _, existed := original[artifact.Path]; existed {
+				marker = "modified "
+			}
+			builder.WriteString("- [" + marker + "] " + artifact.Path + "\n")
+		}
+	}
+	if len(result.DeletePaths) > 0 {
+		builder.WriteString("\n## Removed files\n\n")
+		for _, path := range result.DeletePaths {
+			builder.WriteString("- " + path + "\n")
+		}
+	}
+	builder.WriteString("\nOriginal sources are preserved under `original/`.\n")
+	return builder.String()
+}
+
+func (m *Manager) stepBugHunt(ctx context.Context, task *store.Task) error {
+	index := m.beginStep(task, "review")
+	files, err := m.filesMap(task)
+	if err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+	opts := m.agentOptions()
+	contextText, err := m.ragContext(ctx, task.Prompt, []string{"rtl", "docs"})
+	if err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+	opts.Context = contextText
+	result := agents.BugHunter(ctx, m.llm, opts, files, task.Prompt)
+	if result.Status == "failed" {
+		m.finishStep(task, index, "failed", result.Summary)
+		return fmt.Errorf("review step failed: %s", result.Summary)
+	}
+	if err := m.applyResultArtifacts(task, result, "review"); err != nil {
+		m.finishStep(task, index, "failed", err.Error())
+		return err
+	}
+	for _, issue := range result.Issues {
+		task.Issues = append(task.Issues, map[string]any{
+			"severity": issue.Severity,
+			"code":     issue.Code,
+			"message":  issue.Message,
+		})
+	}
+	m.finishStep(task, index, "completed", result.Summary)
+	return nil
+}
+
 func (m *Manager) stepArchitect(ctx context.Context, task *store.Task, files map[string]string) error {
 	index := m.beginStep(task, "architect")
 	opts := m.agentOptions()
@@ -387,14 +528,20 @@ func (m *Manager) stepArchitect(ctx context.Context, task *store.Task, files map
 		return err
 	}
 	opts.Context = contextText
-	if task.SourceMode == "analyze" {
-		opts.SourcesContext = agents.SourceBundle(files, opts.SourceBudget)
-	}
+	architectPrompt := task.Prompt
 	instruction := "Produce a complete, lint-clean design contract for the user request."
-	if task.SourceMode == "analyze" {
-		instruction = "Derive a complete, lint-clean design contract that describes the existing RTL and the user specification."
+	if task.SourceMode == "analyze" || task.SourceMode == "refactor" {
+		opts.SourcesContext = agents.SourceBundle(files, opts.SourceBudget)
+		instruction = "Derive a complete, lint-clean design contract that describes the existing RTL."
+		if task.SourceMode == "analyze" {
+			instruction += " and the user specification."
+		}
 	}
-	result := agents.Architect(ctx, m.llm, opts, task.Prompt, instruction)
+	if task.SourceMode == "refactor" {
+		// task.Prompt is the refactoring instruction, not a behavioural spec.
+		architectPrompt = "Existing SystemVerilog design (derive the contract from the RTL sources below)."
+	}
+	result := agents.Architect(ctx, m.llm, opts, architectPrompt, instruction)
 	if result.Status == "failed" {
 		m.finishStep(task, index, "failed", result.Summary)
 		return fmt.Errorf("architect step failed: %s", result.Summary)
@@ -748,15 +895,34 @@ func (m *Manager) runCoverageLoop(ctx context.Context, task *store.Task, simulat
 }
 
 // stepMutation measures testbench quality by injecting mutants and checking
+// mutationScope limits mutation to files the testbench actually exercised, so
+// mutants in non-instantiated modules do not inflate the survivor count.
+func mutationScope(simulation *agents.Result) map[string]bool {
+	if simulation == nil || simulation.Coverage == nil || len(simulation.Coverage.Files) == 0 {
+		return nil
+	}
+	scope := map[string]bool{}
+	for _, file := range simulation.Coverage.Files {
+		scope[file.Path] = true
+	}
+	return scope
+}
+
 // whether the simulation still passes. It is best-effort and never fails the
 // task: a passing simulation stays completed with a mutation.weak warning.
-func (m *Manager) stepMutation(ctx context.Context, task *store.Task) {
+func (m *Manager) stepMutation(ctx context.Context, task *store.Task, simulation *agents.Result) {
 	if !m.cfg.MutationEnabled || m.cfg.LLMMode == "mock" {
 		return
 	}
 	index := m.beginStep(task, "mutation")
-	if _, err := exec.LookPath("verilator"); err != nil {
-		m.finishStep(task, index, "failed", "Verilator is not installed on PATH")
+	tool := "verilator"
+	toolName := "Verilator"
+	if m.cfg.SimTool == "questa" {
+		tool = "vsim"
+		toolName = "QuestaSim (vsim)"
+	}
+	if _, err := exec.LookPath(tool); err != nil {
+		m.finishStep(task, index, "failed", toolName+" is not installed on PATH")
 		return
 	}
 	contractData, err := m.contractMap(task)
@@ -770,13 +936,15 @@ func (m *Manager) stepMutation(ctx context.Context, task *store.Task) {
 		return
 	}
 
-	mutants := mutate.Generate(files, m.cfg.MutationBudget, fnvHash(task.ID))
+	mutants := mutate.GenerateScoped(files, m.cfg.MutationBudget, fnvHash(task.ID), mutationScope(simulation))
 	if len(mutants) == 0 {
 		m.finishStep(task, index, "completed", "No mutation sites found.")
 		return
 	}
 
 	opts := m.agentOptions()
+	// Mutation only needs pass/fail, so skip coverage collection for speed.
+	opts.CoverageEnabled = false
 	report := mutate.RunWithWorkers(mutants, m.cfg.MutationConcurrency, func(mutated map[string]string) bool {
 		return agents.Simulator(ctx, opts, mutated, contractData).Passed
 	})
@@ -923,6 +1091,7 @@ func (m *Manager) agentOptions() agents.Options {
 		CoverageMin:           m.cfg.CoverageMin,
 		CoverageRounds:        m.cfg.CoverageRounds,
 		SourceBudget:          m.cfg.MaxSourceChars,
+		SimTool:               m.cfg.SimTool,
 	}
 }
 

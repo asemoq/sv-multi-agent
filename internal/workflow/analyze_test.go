@@ -39,7 +39,7 @@ func TestValidateSourceFiles(t *testing.T) {
 		{name: "empty", files: nil, wantErr: "at least one RTL"},
 		{name: "tb only", files: map[string]string{"tb/tb.sv": "module tb; endmodule"}, wantErr: "at least one SystemVerilog"},
 		{name: "header only rtl", files: map[string]string{"rtl/defs.svh": "`define X 1"}, wantErr: "at least one SystemVerilog"},
-		{name: "verilog rtl", files: map[string]string{"rtl/counter.v": "module counter; endmodule"}, wantErr: "unsupported"},
+		{name: "verilog rtl", files: map[string]string{"rtl/counter.v": "module counter; endmodule"}},
 		{name: "traversal", files: map[string]string{"rtl/../secret.sv": "x"}, wantErr: "unsafe"},
 		{name: "absolute", files: map[string]string{"/etc/passwd.sv": "x"}, wantErr: "unsafe"},
 		{name: "wrong dir", files: map[string]string{"src/counter.sv": "x"}, wantErr: "rtl/ or tb/"},

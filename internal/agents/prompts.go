@@ -42,4 +42,8 @@ var (
 	debuggerExamples        = loadPrompt("debugger_examples.md")
 	plannerSystemPrompt     = loadPrompt("planner.md")
 	plannerRevisionPrompt   = loadPrompt("planner_revision.md")
+	refactorSystemPrompt    = loadPrompt("refactor.md")
+	refactorExamples        = loadPrompt("refactor_examples.md")
+	bugHunterSystemPrompt   = loadPrompt("bughunter.md")
+	bugHunterExamples       = loadPrompt("bughunter_examples.md")
 )

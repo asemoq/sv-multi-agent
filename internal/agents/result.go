@@ -55,6 +55,8 @@ type Result struct {
 	Coverage *coverage.Report
 	// Plan is set by the Planner when the design is decomposed.
 	Plan *Plan
+	// DeletePaths lists files the Refactor agent removed (moved/renamed away).
+	DeletePaths []string
 }
 
 // Options carries the service-owned runtime configuration.
@@ -73,6 +75,8 @@ type Options struct {
 	CoverageEnabled       bool
 	CoverageMin           float64
 	CoverageRounds        int
+	// SimTool selects the simulator backend: "verilator" (default) or "questa".
+	SimTool string
 	// Context is optional retrieved RAG context prepended to LLM prompts.
 	Context string
 	// SourcesContext is an optional structural/source summary for existing RTL.

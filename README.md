@@ -51,7 +51,7 @@ cmd/
 ├── sv-multi-agent/    # standalone server
 └── svctl/           # standalone client
 internal/
-├── agents/          # Architect, Planner, Coder, Verifier, Simulator, Debugger
+├── agents/          # Architect, Planner, Coder, Verifier, Simulator, Debugger, Refactor, BugHunter
 ├── sv/
 │   ├── contract/    # normalize + lint + decomposition heuristic
 │   ├── markers/     # simulation marker protocol
@@ -222,7 +222,8 @@ svma rag search "ALU immediate operand select" -k 5
 | `DECOMPOSE_ENABLED` | `1` | Включить Planner для больших контрактов |
 | `DECOMPOSE_MIN_LINES` | `400` | Порог оценки размера для декомпозиции |
 | `CODER_CONCURRENCY` | `4` | Параллельных Coder-вызовов для под-модулей (`<=1` — последовательно) |
-| `SIM_TOP_MODULE` | `tb` | Top module для Verilator |
+| `SIM_TOOL` | `verilator` | Бэкенд симуляции: `verilator` или `questa` (ModelSim/QuestaSim) |
+| `SIM_TOP_MODULE` | `tb` | Top module для симулятора |
 | `TRACE_WINDOW_EDGES` | `10` | Clock edges в trace report |
 | `VERILATOR_BUILD_TIMEOUT` | `240` | Таймаут сборки, секунды |
 | `VERILATOR_RUN_TIMEOUT` | `60` | Таймаут симуляции, секунды |
@@ -334,6 +335,8 @@ svma config show            # показать конфигурацию
 svma serve                  # запустить sv-multi-agent
 svma submit -prompt "..."   # отправить задачу генерации
 svma analyze -rtl <path>    # проанализировать существующий RTL
+svma refactor -rtl <path>   # отрефакторить существующий RTL
+svma review -rtl <path>     # найти функциональные баги в RTL
 svma wait -task-id <id>     # дождаться
 svma get / list             # состояние задач
 svma report -task-id <id>   # баг-репорт по задаче
@@ -349,6 +352,46 @@ svma version                # версия
 | macOS | `~/Library/Application Support/svma/config.json` |
 
 Переменные окружения имеют приоритет над файлом.
+
+### Интерактивный TUI
+
+`svma tui` открывает полноэкранный терминальный клиент (Bubble Tea, как у
+OpenCode) и общается с сервисом по HTTP/JSON + SSE:
+
+```bash
+svma tui
+# или с явным адресом:
+svma tui -addr 127.0.0.1:50050
+```
+
+Что внутри:
+
+- слева — список задач со статусами (`queued`, `running`, `completed`, `failed`),
+  обновляется каждые 2 секунды;
+- справа — живой поток событий выбранной задачи (шаги, reasoning/content от LLM,
+  артефакты, результаты симулятора) и вкладка `Report` с markdown-отчётом;
+- снизу — строка ввода: наберите описание дизайна и нажмите `Enter`, чтобы
+  отправить задачу. Клавиша `a` переключает режим `GENERATE`/`ANALYZE`; в
+  `ANALYZE` появляется дополнительное поле `rtl ▷` с путём к каталогу RTL.
+
+Клавиши:
+
+| Клавиша | Действие |
+|---|---|
+| `Enter` | отправить задачу из строки ввода |
+| `a` (в списке) / `Ctrl+A` | переключить режим `GENERATE` / `ANALYZE` |
+| `Tab` / `Esc` | переключить фокус (список ↔ ввод; в analyze ещё поле пути) |
+| `↑`/`↓` или `j`/`k` | выбрать задачу |
+| `t` | переключить `Live` / `Report` |
+| `r` | обновить список и статус соединения |
+| `g` / `G` | в начало / в конец |
+| `Ctrl+C` / `q` | выйти |
+
+Режим `ANALYZE` читает `.sv` / `.svh` / `.sva` из указанного каталога, пакует их
+как `rtl/...` и отправляет `source_mode: "analyze"` (то же, что
+`svma analyze -rtl <path>`), так что большой проект можно запустить прямо из TUI.
+Лимит бандла — 24 МБ HDL. TUI также следит за любыми задачами, включая
+запущенные из CLI.
 
 ### Анализ существующего RTL
 
@@ -371,6 +414,49 @@ svma analyze \
 Порядок шагов: `ingest → architect → lint → verifier? → simulator → debugger*`.
 Артефакты дополняются `reports/lint.log`, `reports/lint.json`, а при включённом
 coverage — `reports/coverage.info` и `reports/coverage.json`.
+
+### Рефакторинг существующего RTL
+
+Команда `refactor` преобразует готовый RTL по инструкции (переименование модуля,
+вынос блока в под-модуль, декомпозиция, чистка), сохраняя поведение, и затем
+**проверяет результат** так же, как `analyze`:
+
+```bash
+svma refactor \
+  -rtl ./my_project/rtl \
+  -tb ./my_project/tb \
+  -prompt "Вынеси блок подсчёта в отдельный модуль counter_core"
+```
+
+- `-prompt` / `-spec` — инструкция рефакторинга (обязательна);
+- `-rtl` — файл или директория с `.sv` / `.svh` / `.sva`;
+- `-tb` — опционально; если не передан, Verifier сгенерирует тестбенч.
+
+Порядок шагов: `ingest → refactor → architect → lint → verifier? → simulator →
+debugger*`. Агент `Refactor` возвращает замены целых файлов (`rtl/…`, `tb/…`),
+блочные патчи (`block_id` + `new_code`) и список удалений `delete` (для переноса
+модулей в новые файлы).
+
+Рефакторинг **не разрушает исходники**: оригинальные файлы сохраняются в
+`original/`, изменения фиксируются в `reports/refactor.md`, а весь результат
+лежит в отдельном воркспейсе задачи (`workspace/<task-id>/`).
+
+### Поиск багов
+
+Команда `review` ищет функциональные баги в готовом RTL (приоритет/полярность
+сброса, off-by-one и переполнение счётчиков, latches, блокирующие/неблокирующие
+присваивания, гонки, CDC без синхронизации и т. п.) и ничего не меняет:
+
+```bash
+svma review -rtl ./my_project/rtl
+# с фокусом:
+svma review -rtl ./my_project/rtl -prompt "проверь логику сброса и синхронизацию CDC"
+```
+
+Порядок шагов: `ingest → review`. Агент `BugHunter` возвращает список
+подозрительных мест (`file`, `line`, `severity`, `category`, `description`,
+`suggested_fix`), который попадает в `task.Issues` и отчёты `reports/bugs.json`
+и `reports/bugs.md`.
 
 ### Mutation testing
 

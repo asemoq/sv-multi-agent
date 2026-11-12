@@ -90,7 +90,7 @@ func BundleForWorker(task *store.Task) ([]FileEntry, error) {
 
 func isHDLSource(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".sv", ".svh", ".sva":
+	case ".sv", ".svh", ".sva", ".v", ".vh":
 		return true
 	default:
 		return false

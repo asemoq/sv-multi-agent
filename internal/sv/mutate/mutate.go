@@ -51,11 +51,22 @@ var (
 // Generate creates up to budget deterministic mutants of the SystemVerilog
 // files. Mutants are shuffled with seed so results are reproducible.
 func Generate(files map[string]string, budget int, seed int64) []Mutant {
+	return GenerateScoped(files, budget, seed, nil)
+}
+
+// GenerateScoped is like Generate but only mutates files in scope (when scope
+// is non-nil). This keeps mutation scores meaningful when a testbench exercises
+// only part of the design: mutants in non-instantiated modules would otherwise
+// always survive.
+func GenerateScoped(files map[string]string, budget int, seed int64, scope map[string]bool) []Mutant {
 	if budget <= 0 {
 		return nil
 	}
 	paths := make([]string, 0, len(files))
 	for path := range files {
+		if scope != nil && !scope[path] {
+			continue
+		}
 		if strings.HasPrefix(path, "rtl/") && strings.HasSuffix(strings.ToLower(path), ".sv") {
 			paths = append(paths, path)
 		}

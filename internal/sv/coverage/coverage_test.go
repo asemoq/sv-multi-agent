@@ -75,3 +75,49 @@ func TestParseLCOVEmpty(t *testing.T) {
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestParseQuestaDetails(t *testing.T) {
+	data := strings.Join([]string{
+		"Statement Coverage for instance /tb/dut --",
+		"",
+		"    Line         Item                      Count     Source ",
+		"    ----         ----                      -----     ------ ",
+		"  File rtl/counter.sv",
+		"    2               1                          5     ",
+		"    2               2                          2     ",
+		"    2               3                          3     ",
+		"",
+		"=================================================================================",
+		"Branch Coverage for instance /tb --",
+		"  File rtl/other.sv",
+		"    9               1                    ***0***     ",
+		"",
+		"Statement Coverage for instance /tb --",
+		"",
+		"  File tb/tb.sv",
+		"    3               1                         10     ",
+		"    10              1                    ***0***     ",
+		"    11              1                          1     ",
+	}, "\n")
+
+	report := ParseQuestaDetails([]byte(data))
+	if report.LinesTotal != 4 || report.LinesCovered != 3 {
+		t.Fatalf("report = %#v", report)
+	}
+	if report.LineCoverage != 0.75 {
+		t.Fatalf("coverage = %v, want 0.75", report.LineCoverage)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("files = %#v", report.Files)
+	}
+	if report.Files[0].Path != "rtl/counter.sv" || report.Files[0].LinesTotal != 1 || report.Files[0].LinesCovered != 1 {
+		t.Fatalf("first file = %#v", report.Files[0])
+	}
+	if report.Files[1].Path != "tb/tb.sv" || report.Files[1].LinesCovered != 2 {
+		t.Fatalf("second file = %#v", report.Files[1])
+	}
+	uncovered := report.UncoveredFor("tb/", 0)
+	if len(uncovered) != 1 || len(uncovered[0].Lines) != 1 || uncovered[0].Lines[0] != 10 {
+		t.Fatalf("uncovered = %#v", uncovered)
+	}
+}

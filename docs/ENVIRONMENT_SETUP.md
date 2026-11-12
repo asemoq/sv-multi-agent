@@ -209,7 +209,8 @@ recreating the table (or a migration). If `/v1/embeddings` is not up yet,
 | `DECOMPOSE_ENABLED` | `1` | Enable the Planner for large contracts |
 | `DECOMPOSE_MIN_LINES` | `400` | Estimated-size threshold for decomposition |
 | `CODER_CONCURRENCY` | `4` | Parallel sub-module Coder calls (`<=1` runs sequentially) |
-| `SIM_TOP_MODULE` | `tb` | Verilator top module |
+| `SIM_TOOL` | `verilator` | Simulator backend: `verilator` or `questa` (ModelSim/QuestaSim) |
+| `SIM_TOP_MODULE` | `tb` | Simulator top module |
 | `TRACE_WINDOW_EDGES` | `10` | Clock edges in the trace report |
 | `VERILATOR_BUILD_TIMEOUT` | `240` | Compile timeout, seconds |
 | `VERILATOR_RUN_TIMEOUT` | `60` | Simulation timeout, seconds |

@@ -1,4 +1,5 @@
 .env
+.env.overnight
 dist/
 bin/
 workspace/*/
@@ -9,3 +10,4 @@ knowledge/*
 !knowledge/.gitkeep
 .run/
 .idea/*
+/example/

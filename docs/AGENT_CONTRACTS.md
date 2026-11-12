@@ -124,6 +124,46 @@ A bare `PASS` is accepted only when no explicit marker is present.
 - **Fallback:** `{"files": [{"path": "rtl/module.sv", "content": "..."}]}`.
 - **Mock:** returns `failed` (no automatic repair).
 
+## Refactor
+
+- **Function:** `agents.Refactor(ctx, client, opts, files, instruction)`
+- **Input:** the existing RTL bundle (`map[path]content`) and a refactoring
+  instruction. It preserves behavior: same ports, same functionality, same
+  timing intent.
+- **Preferred output:** whole-file replacements keyed by the original path:
+  `{"files": {"rtl/module.sv": "…", "tb/tb_module.sv": "…"}, "summary": "…"}`.
+- **Alternative:** a localized block patch `{"patches": [{"block_id": "rtl/module.sv:blk_0", "new_code": "…"}], "summary": "…"}`
+  (applied via `agents.ApplyBlockPatches`).
+- **Optional deletion:** `{"delete": ["rtl/old.sv"]}` lists files removed by the
+  refactor (e.g. a module moved to a new file). Surfaced as `Result.DeletePaths`.
+- **Behavior:** the workflow (`source_mode=refactor`) ingests `rtl/`/`tb/`, runs
+  the Refactor, preserves the originals under `original/`, writes
+  `reports/refactor.md`, then verifies behaviour like `analyze`:
+  `architect → lint → verifier? → simulator → debugger*` (no Planner/Coder).
+- **Mock:** returns `failed` (no automated transformation).
+
+## BugHunter
+
+- **Function:** `agents.BugHunter(ctx, client, opts, files, instruction)`
+- **Input:** the existing RTL bundle and an optional review focus. It reports
+  functional bugs without modifying sources.
+- **Output:** a list of suspected bugs as `Issues` (severity `error`/`warning`,
+  code `bug.<category>`, message with location) plus artifacts
+  `reports/bugs.json` and `reports/bugs.md`.
+
+  ```json
+  {
+    "bugs": [
+      {"file": "rtl/counter.sv", "line": 8, "severity": "warning", "category": "arithmetic", "title": "...", "description": "...", "suggested_fix": "..."}
+    ],
+    "summary": "one-line summary"
+  }
+  ```
+
+- **Behavior:** the workflow (`source_mode=review`) ingests `rtl/`/`tb/` and runs
+  the BugHunter, then completes with the bug count. It does not simulate or edit.
+- **Mock:** returns `failed` (no analysis).
+
 ## LLM and MCP
 
 The LLM client is `../internal/llm`; the MCP manager is `internal/mcp`. Both are
